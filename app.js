@@ -23,6 +23,27 @@ function percentile(arr, p) {
 function hash1(n) { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
 // smooth 1D value noise in [-1,1]
 function noise1(x) { const i = Math.floor(x); const f = x - i; const u = f * f * (3 - 2 * f); return lerp(hash1(i), hash1(i + 1), u) * 2 - 1; }
+// Null-safe error text. Safari rejects some media APIs with `null` or bare Events instead of Error objects.
+function errText(e) {
+  if (e == null) return 'unknown error (the browser reported no details)';
+  if (typeof e === 'string') return e;
+  if (typeof Event !== 'undefined' && e instanceof Event) {
+    const t = e.target; const me = t && t.error;
+    if (me) return `${e.type} event — MediaError code ${me.code}${me.message ? ': ' + me.message : ''}`;
+    return `${e.type} event`;
+  }
+  const name = e.name && e.name !== 'Error' ? e.name + ': ' : '';
+  if (e.message) return name + e.message;
+  try { return name + String(e); } catch (x) { return 'unprintable error'; }
+}
+function toError(e, context) {
+  if (e instanceof Error && !context) return e;
+  const err = new Error((context ? context + ': ' : '') + errText(e));
+  if (e && e.name) err.name = e.name;
+  err.cause = e;
+  return err;
+}
+const MEDIA_ERR = { 1: 'loading was aborted', 2: 'network error while reading the file', 3: 'the browser could not decode the video', 4: 'this video format/codec is not supported by this browser' };
 function debounce(fn, ms) { let id; return (...a) => { clearTimeout(id); id = setTimeout(() => fn(...a), ms); }; }
 const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
@@ -171,30 +192,65 @@ const state = {
 
 /* ============================== 4. ANALYSIS ============================== */
 // Decode an audio track from a media File into an AudioBuffer. Returns null if the file has no audio.
-async function decodeAudioFromFile(file, log) {
-  const ac = getAudioCtx();
-  const preferStreaming = file.size > 300e6 && 'AudioDecoder' in window;
-  const viaWebAudio = async () => {
-    const ab = await file.arrayBuffer();
-    return await new Promise((res, rej) => {
-      const p = ac.decodeAudioData(ab, res, rej);
-      if (p && p.then) p.then(res, rej);
-    });
-  };
-  const viaMediabunny = async () => {
-    await loadMediabunny();
-    if (!MB) throw new Error('media library unavailable');
+// Probe the container with Mediabunny: container, tracks, codecs, and whether this browser can decode each.
+async function probeMedia(file) {
+  await loadMediabunny();
+  if (!MB) return { error: 'media library unavailable' };
+  try {
     const input = new MB.Input({ source: new MB.BlobSource(file), formats: MB.ALL_FORMATS });
-    const track = await input.getPrimaryAudioTrack();
-    if (!track) return null;
-    if (!(await track.canDecode())) throw new Error('audio codec not decodable in this browser');
+    const fmt = await input.getFormat();
+    const out = { container: fmt && fmt.name, video: [], audio: [] };
+    for (const t of await input.getVideoTracks()) out.video.push({ codec: t.codec, coded: `${t.codedWidth}×${t.codedHeight}`, rotation: t.rotation, canDecode: await t.canDecode().catch(() => false) });
+    for (const t of await input.getAudioTracks()) out.audio.push({ codec: t.codec, channels: t.numberOfChannels, rate: t.sampleRate, canDecode: await t.canDecode().catch(() => false) });
+    out.input = input;
+    return out;
+  } catch (e) { return { error: errText(e) }; }
+}
+function decodeWithWebAudio(ac, ab) {
+  return new Promise((res, rej) => {
+    let done = false;
+    const ok = (b) => { if (!done) { done = true; res(b); } };
+    const fail = (e) => { if (!done) { done = true; rej(toError(e, 'decodeAudioData failed')); } };
+    try { const p = ac.decodeAudioData(ab, ok, fail); if (p && p.then) p.then(ok, fail); }
+    catch (e) { fail(e); }
+  });
+}
+// Decode an audio track from a media File into an AudioBuffer. Returns null if the file has no audio track.
+// Routes, in order:
+//  A) copy the audio track (no re-encode) into a small .m4a and decode that with Web Audio — works on iOS Safari
+//     even without WebCodecs audio, and avoids loading a huge .mov into memory;
+//  B) decode the track with WebCodecs (Mediabunny AudioBufferSink);
+//  C) decodeAudioData on the whole file (classic path; fails on many iPhone .mov files in Safari).
+async function decodeAudioFromFile(file, log, probe) {
+  const ac = getAudioCtx();
+  const say = (m, c) => log && log(m, c);
+  await loadMediabunny();
+  if (!probe) probe = await probeMedia(file);
+  const tracks = probe && probe.input ? await probe.input.getAudioTracks().catch(() => []) : null;
+  if (tracks && tracks.length === 0) { say('The file contains no audio track.', 'warn'); return null; }
+  const errors = [];
+  const viaRemux = async () => {
+    if (!MB || !probe.input) throw new Error('container could not be parsed');
+    const inp = new MB.Input({ source: new MB.BlobSource(file), formats: MB.ALL_FORMATS });
+    const output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new MB.BufferTarget() });
+    const conv = await MB.Conversion.init({ input: inp, output, video: { discard: true }, audio: { forceTranscode: false } });
+    if (!conv.isValid) throw new Error('audio track cannot be copied: ' + (conv.discardedTracks || []).map((d) => `${d.track.type}/${d.track.codec || '?'} (${d.reason})`).join(', '));
+    await conv.execute();
+    const ab = output.target.buffer;
+    say(`Audio track copied to a ${(ab.byteLength / 1e6).toFixed(1)} MB .m4a for decoding.`);
+    return await decodeWithWebAudio(ac, ab);
+  };
+  const viaWebCodecs = async () => {
+    if (!MB || !probe.input) throw new Error('container could not be parsed');
+    if (!('AudioDecoder' in window)) throw new Error('WebCodecs AudioDecoder not available in this browser');
+    const inp = new MB.Input({ source: new MB.BlobSource(file), formats: MB.ALL_FORMATS });
+    let track = null;
+    for (const t of await inp.getAudioTracks()) if (await t.canDecode().catch(() => false)) { track = t; break; }
+    if (!track) throw new Error('no audio track this browser can decode');
     const sink = new MB.AudioBufferSink(track);
     const parts = []; let end = 0, sr = 0, ch = 1;
-    for await (const w of sink.buffers()) {
-      parts.push(w); sr = w.buffer.sampleRate; ch = Math.max(ch, w.buffer.numberOfChannels);
-      end = Math.max(end, w.timestamp + w.buffer.duration);
-    }
-    if (!parts.length) return null;
+    for await (const w of sink.buffers()) { parts.push(w); sr = w.buffer.sampleRate; ch = Math.max(ch, w.buffer.numberOfChannels); end = Math.max(end, w.timestamp + w.buffer.duration); }
+    if (!parts.length) throw new Error('decoder produced no audio');
     const t0 = Math.min(0, parts[0].timestamp);
     const out = new AudioBuffer({ length: Math.ceil((end - t0) * sr), numberOfChannels: Math.min(ch, 2), sampleRate: sr });
     for (const w of parts) {
@@ -207,21 +263,43 @@ async function decodeAudioFromFile(file, log) {
     }
     return out;
   };
-  const order = preferStreaming ? [viaMediabunny, viaWebAudio] : [viaWebAudio, viaMediabunny];
-  let lastErr = null;
-  for (const fn of order) {
-    try { const b = await fn(); if (b) return b; if (b === null && fn === viaMediabunny) return null; }
-    catch (e) { lastErr = e; log && log(`Audio decode route failed (${e.message || e}), trying another…`, 'warn'); }
+  const viaWholeFile = async () => {
+    if (file.size > 700e6) throw new Error(`file too large (${(file.size / 1e6).toFixed(0)} MB) to load whole into memory`);
+    return await decodeWithWebAudio(ac, await file.arrayBuffer());
+  };
+  for (const [name, fn] of [['copy audio track → Web Audio', viaRemux], ['WebCodecs decoder', viaWebCodecs], ['Web Audio on whole file', viaWholeFile]]) {
+    try {
+      const b = await fn();
+      if (b && b.length) { say(`Original audio decoded via ${name}.`, 'ok'); return b; }
+      errors.push(`${name}: empty result`);
+    } catch (e) {
+      errors.push(`${name}: ${errText(e)}`); console.warn('audio route failed', name, e);
+      say(`Audio route “${name}” failed: ${errText(e)}`, 'warn');
+    }
   }
-  if (lastErr) log && log('Could not find a decodable audio track: ' + (lastErr.message || lastErr), 'warn');
-  return null;
+  const err = new Error('Could not decode the original audio of this video. ' + errors.join(' | '));
+  err.audioDecode = true; throw err;
 }
 
 // Render a buffer to mono at a given rate, optionally band-limited (used for voice detection and Whisper input)
 async function renderMono(buf, rate, band) {
-  const len = Math.max(1, Math.ceil(buf.duration * rate));
   const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-  const oc = new OAC(1, len, rate);
+  let oc, actual = rate;
+  try { oc = new OAC(1, Math.max(1, Math.ceil(buf.duration * rate)), rate); }
+  catch (e) {
+    // Older Safari only accepts 22.05–96 kHz offline contexts: render at the buffer's rate and resample in JS.
+    actual = buf.sampleRate; oc = new OAC(1, Math.max(1, Math.ceil(buf.duration * actual)), actual);
+    if (band) band = [band[0], Math.min(band[1], rate * 0.45)]; else band = [10, rate * 0.45];
+  }
+  const out = await renderMonoWith(oc, buf, band);
+  return actual === rate ? out : resampleLinear(out, actual, rate);
+}
+function resampleLinear(x, from, to) {
+  const n = Math.floor(x.length * to / from), y = new Float32Array(n), k = from / to;
+  for (let i = 0; i < n; i++) { const p = i * k, j = Math.floor(p), f = p - j; y[i] = (x[j] || 0) * (1 - f) + (x[j + 1] || 0) * f; }
+  return y;
+}
+async function renderMonoWith(oc, buf, band) {
   const src = oc.createBufferSource(); src.buffer = buf;
   let node = src;
   if (band) {
@@ -372,17 +450,21 @@ async function analyzeFrames(file, url, dur, aspect, onProgress) {
         usedDecoder = samples.length > N * 0.8;
         if (!usedDecoder) samples.length = 0, prevL = null;
       }
-    } catch (e) { console.warn('decoder frame analysis failed, falling back to seeking', e); samples.length = 0; prevL = null; }
+    } catch (e) { console.warn('decoder frame analysis failed, falling back to seeking', errText(e)); samples.length = 0; prevL = null; }
   }
   if (!usedDecoder) {
-    const v = document.createElement('video'); v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = url;
-    await new Promise((r, j) => { v.onloadeddata = r; v.onerror = () => j(new Error('video element cannot load file')); });
-    const sub = times.filter((_, i) => i % Math.max(1, Math.ceil(N / 160)) === 0);
+    // iOS only decodes frames for video elements that are in the page and were started by a tap, so reuse the pool element.
+    const v = $('#vidA'); const sub = times.filter((_, i) => i % Math.max(1, Math.ceil(N / 100)) === 0);
+    const t0 = performance.now(); let timeouts = 0;
     for (let i = 0; i < sub.length; i++) {
-      await new Promise((r) => { const to = setTimeout(r, 1500); v.onseeked = () => { clearTimeout(to); r(); }; v.currentTime = sub[i]; });
-      process(v, sub[i]); onProgress(i / sub.length);
+      const ok = await new Promise((r) => { const to = setTimeout(() => r(false), 1500); v.onseeked = () => { clearTimeout(to); r(true); }; v.currentTime = sub[i]; });
+      if (!ok) timeouts++;
+      if (v.readyState >= 2) process(v, sub[i]);
+      onProgress(i / sub.length);
+      if (timeouts > 8 || performance.now() - t0 > 90000) { console.warn('frame sampling stopped early', { timeouts }); break; }
     }
-    v.removeAttribute('src'); v.load();
+    v.onseeked = null;
+    if (!samples.length) samples.push({ t: 0, motion: 0, scene: 0, bright: 0.5, skin: 0, sx: 0.5, sy: 0.4, mx: 0.5, my: 0.5 });
   }
   return { samples, method: usedDecoder ? 'WebCodecs decode' : 'video seeking' };
 }
@@ -466,8 +548,19 @@ async function analyzeMusic(buf) {
 async function analyzeAll(log, progress) {
   const A = { hop: 0.01 };
   const dur = state.meta.duration;
-  progress(0.05, 'Decoding original audio…');
-  if (!state.origAudio) state.origAudio = await decodeAudioFromFile(state.file, log);
+  progress(0.04, 'Reading the video file…');
+  const probe = await probeMedia(state.file);
+  if (probe.error) log(`Container probe failed: ${probe.error} (will still try the browser's own decoders)`, 'warn');
+  else log(`File: ${probe.container || '?'} · video ${probe.video.map((v) => `${v.codec || '?'} ${v.coded} rot ${v.rotation}° ${v.canDecode ? 'decodable' : 'NOT decodable by WebCodecs'}`).join(', ') || 'none'} · audio ${probe.audio.map((a) => `${a.codec || '?'} ${a.channels}ch ${a.rate} Hz ${a.canDecode ? 'decodable' : 'NOT decodable by WebCodecs'}`).join(', ') || 'none'}`);
+  state.probe = probe;
+  progress(0.06, 'Decoding original audio…');
+  if (!state.origAudio && !state.skipOrigAudio) {
+    try { state.origAudio = await decodeAudioFromFile(state.file, log, probe); }
+    catch (e) {
+      if (e && e.audioDecode) { const err = new Error(errText(e)); err.audioDecode = true; throw err; }
+      throw toError(e, 'Audio decoding');
+    }
+  }
   if (state.origAudio) {
     log(`Original audio: ${state.origAudio.numberOfChannels} ch, ${state.origAudio.sampleRate} Hz, ${state.origAudio.duration.toFixed(1)} s`, 'ok');
     progress(0.15, 'Analyzing speech, pauses and loudness…');
@@ -488,7 +581,7 @@ async function analyzeAll(log, progress) {
     A.speechRmsDb = c2 ? 10 * Math.log10(s2 / c2 + 1e-12) : -40;
     log(`Sound present ${(cov * 100).toFixed(0)}% of the time · ${A.likelySpeech ? 'speech-like modulation' : 'little speech-like modulation'} · ${A.emphasis.length} emphasis peaks`, 'ok');
   } else {
-    log('This video has no audio track (or it could not be decoded). Editing uses motion only.', 'warn');
+    log(state.skipOrigAudio ? 'Continuing WITHOUT the original audio (you chose this). Editing uses motion only.' : 'This video has no audio track. Editing uses motion only.', 'warn');
     A.env = new Float32Array(Math.floor(dur / A.hop)).fill(-90); A.rawRegions = []; A.emphasis = []; A.soundCoverage = 0; A.likelySpeech = false; A.speechRmsDb = -40;
   }
   progress(0.35, 'Analyzing motion, scenes and subject position…');
@@ -571,7 +664,7 @@ async function transcribeLocal(mono16, model, language, onStatus) {
       else if (d.type === 'result') resolve(d);
       else if (d.type === 'error') reject(new Error(d.message));
     };
-    asrWorker.onerror = (e) => reject(new Error('Speech worker failed to start: ' + (e.message || 'module workers or CDN blocked')));
+    asrWorker.onerror = (e) => reject(new Error('Speech worker failed to start: ' + ((e && e.message) || 'module workers or CDN blocked')));
     const copy = mono16.slice();
     asrWorker.postMessage({ audio: copy, model, language, device }, [copy.buffer]);
   });
@@ -1684,7 +1777,7 @@ async function exportCapabilities() {
       if (state.file) { const inp = new MB.Input({ source: new MB.BlobSource(state.file), formats: MB.ALL_FORMATS }); const vt = await inp.getPrimaryVideoTrack(); res.decode = !!(vt && await vt.canDecode()); res.inCodec = vt && vt.codec; }
       res.webcodecs = !!(res.vcodec && res.acodec && res.decode);
       if (!res.vcodec) res.why = 'no video encoder'; else if (!res.acodec) res.why = 'no audio encoder (AAC/Opus) in this browser'; else if (!res.decode) res.why = 'cannot decode the source video codec';
-    } catch (e) { res.why = e.message; }
+    } catch (e) { res.why = errText(e); }
   } else res.why = 'WebCodecs not supported';
   if (window.MediaRecorder && HTMLCanvasElement.prototype.captureStream) {
     const types = ['video/mp4;codecs=avc1.640028,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
@@ -1864,20 +1957,24 @@ function redraw() { if (player) player.redraw(); }
 async function loadVideo(file) {
   if (player) player.pause();
   if (state.url) URL.revokeObjectURL(state.url);
-  Object.assign(state, { file, url: URL.createObjectURL(file), meta: null, origAudio: null, analysis: null, edit: null, mix: null, transcript: null });
+  Object.assign(state, { file, url: URL.createObjectURL(file), meta: null, origAudio: null, analysis: null, edit: null, mix: null, transcript: null, skipOrigAudio: false, probe: null });
   lastAsrKey = '';
   $('#videoInfo').textContent = 'Loading…';
   ['#previewCard', '#adjustCard', '#exportCard'].forEach((s) => $(s).classList.add('hidden'));
   try {
-    for (const v of vids) { v.src = state.url; v.load(); }
-    await new Promise((res, rej) => { vids[0].onloadedmetadata = res; vids[0].onerror = () => rej(new Error('This browser cannot play this video file/codec.')); });
+    for (const v of vids) { v.muted = true; v.defaultMuted = true; v.playsInline = true; v.src = state.url; v.load(); }
+    await new Promise((res, rej) => {
+      const to = setTimeout(() => rej(new Error('Timed out reading the video (20 s). The file may be stored in iCloud and still downloading — wait and try again.')), 20000);
+      vids[0].onloadedmetadata = () => { clearTimeout(to); res(); };
+      vids[0].onerror = () => { clearTimeout(to); const me = vids[0].error; rej(new Error(`This browser cannot open this video${me ? ` (MediaError ${me.code}: ${MEDIA_ERR[me.code] || 'unknown'}${me.message ? ' — ' + me.message : ''})` : ''}. Try exporting it from Photos as “Most Compatible”.`)); };
+    });
     let d = vids[0].duration;
     if (!isFinite(d)) { vids[0].currentTime = 1e7; await new Promise((r) => (vids[0].ondurationchange = r)); d = vids[0].duration; vids[0].currentTime = 0; }
     state.meta = { duration: d, width: vids[0].videoWidth, height: vids[0].videoHeight };
     const mb = (file.size / 1e6).toFixed(1);
     $('#videoInfo').innerHTML = `<b>${file.name}</b> · ${fmtTime(d)} · ${state.meta.width}×${state.meta.height} · ${mb} MB` + (d > 600 ? ' <span class="badge exp">long video: analysis and export will be slow on phones</span>' : '');
     $('#autoEditBtn').disabled = false;
-  } catch (e) { $('#videoInfo').innerHTML = `<span style="color:var(--err)">${e.message}</span>`; $('#autoEditBtn').disabled = true; }
+  } catch (e) { console.error(e); $('#videoInfo').innerHTML = `<span style="color:var(--err)">${escapeHtml(errText(e))}</span>`; $('#autoEditBtn').disabled = true; }
 }
 
 async function loadMusic(file) {
@@ -1891,7 +1988,7 @@ async function loadMusic(file) {
     $('#musicInfo').innerHTML = `<b>${file.name}</b> · ${fmtTime(buf.duration)} · ≈${Math.round(beats.bpm)} BPM · ${beats.beats.length} beats detected${beats.drop != null ? ` · drop ≈ ${beats.drop}s` : ''}`;
     $('#musicRemove').classList.remove('hidden');
     if (state.edit) { rebuildFromCurrentSegments(); await refreshAll(true); }
-  } catch (e) { state.music = null; $('#musicInfo').innerHTML = `<span style="color:var(--err)">Music error: ${e.message}</span>`; }
+  } catch (e) { state.music = null; $('#musicInfo').innerHTML = `<span style="color:var(--err)">Music error: ${escapeHtml(errText(e))}</span>`; }
 }
 
 /* ---------- transcription ---------- */
@@ -1920,7 +2017,7 @@ async function runTranscription(force) {
     lastAsrKey = key;
     log(words.length ? `Subtitles: ${words.length} words from ${source}.` : 'Speech recognition returned no words.', words.length ? 'ok' : 'warn');
   } catch (e) {
-    log('Subtitles failed: ' + e.message + ' — continuing without subtitles.', 'err');
+    log('Subtitles failed: ' + errText(e) + ' — continuing without subtitles.', 'err');
   }
 }
 
@@ -1934,6 +2031,11 @@ async function doAutoEdit() {
   await keepAwake(true);
   const t0 = performance.now();
   try {
+    log(`Browser: ${navigator.userAgent.replace(/^Mozilla\/5\.0 /, '')}`);
+    log(`Capabilities: VideoDecoder ${'VideoDecoder' in window ? '✓' : '✗'} · AudioDecoder ${'AudioDecoder' in window ? '✓' : '✗'} · VideoEncoder ${'VideoEncoder' in window ? '✓' : '✗'} · AudioEncoder ${'AudioEncoder' in window ? '✓' : '✗'} · WebGL2 ${document.createElement('canvas').getContext('webgl2') ? '✓' : '✗'} · MediaRecorder ${'MediaRecorder' in window ? '✓' : '✗'} · media library ${MB ? '✓' : (await loadMediabunny()) ? '✓' : '✗ (vendor/mediabunny.min.mjs missing?)'}`);
+    log(`Video: ${state.file.name} · ${state.file.type || 'unknown type'} · ${(state.file.size / 1e6).toFixed(1)} MB · ${fmtTime(state.meta.duration)} · ${state.meta.width}×${state.meta.height}`);
+    setProgress(0.02, 'Checking that the video decodes…');
+    await verifyVideoFrames();
     if (!state.analysis) await analyzeAll(log, setProgress);
     showAnalysisChips();
     setProgress(0.82, 'Subtitles…'); await runTranscription(false);
@@ -1949,10 +2051,37 @@ async function doAutoEdit() {
     await player.seek(0);
     $('#previewCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (e) {
-    console.error(e); log('Error: ' + (e.message || e), 'err'); setProgress(1, 'Something went wrong');
+    console.error('AUTO EDIT failed', e);
+    log('Error: ' + errText(e), 'err');
+    const frames = e && e.stack ? String(e.stack).split('\n').map((l) => l.trim()).filter((l) => /^at |@/.test(l)).slice(0, 3) : [];
+    if (frames.length) log('Where: ' + frames.join(' ← '), 'warn');
+    if (e && e.audioDecode) {
+      setProgress(1, 'Original audio could not be decoded');
+      log('The edit was stopped so it does not silently lose your sound. Details for each decoding route are listed above. You can try again, export the clip from Photos as “Most Compatible”, or continue without the original audio.', 'warn');
+      const b = document.createElement('button'); b.className = 'btn small'; b.textContent = 'Continue without original audio';
+      b.onclick = () => { state.skipOrigAudio = true; b.remove(); doAutoEdit(); };
+      $('#log').appendChild(b);
+    } else setProgress(1, 'Something went wrong — details below');
   } finally { ui.busy = false; $('#autoEditBtn').disabled = false; keepAwake(false); }
 }
 
+// Make sure the hidden player elements actually produce frames (iOS only decodes after a tap-initiated play()).
+async function verifyVideoFrames() {
+  for (const [i, v] of vids.entries()) {
+    if (v.readyState >= 2 && v.videoWidth) continue;
+    const ok = await new Promise((res) => {
+      const to = setTimeout(() => res(false), 8000);
+      const done = () => { clearTimeout(to); res(true); };
+      v.addEventListener('loadeddata', done, { once: true }); v.addEventListener('seeked', done, { once: true });
+      try { v.currentTime = Math.min(0.05, (state.meta.duration || 1) / 2); } catch (e) { }
+    });
+    if (!ok && !(v.readyState >= 2)) {
+      const me = v.error;
+      throw new Error(`The browser could not decode video frames (player ${i + 1}, readyState ${v.readyState}${me ? `, MediaError ${me.code}: ${MEDIA_ERR[me.code] || ''} ${me.message || ''}` : ''}). Try exporting the clip from Photos as “Most Compatible” (H.264).`);
+    }
+  }
+  log(`Video frames decode OK (${vids[0].videoWidth}×${vids[0].videoHeight}).`, 'ok');
+}
 function showAnalysisChips() {
   const A = state.analysis; const c = $('#analysisChips'); c.innerHTML = '';
   const chip = (t, cls = '') => { const s = document.createElement('span'); s.className = 'badge ' + cls; s.textContent = t; c.appendChild(s); return s; };
@@ -2122,14 +2251,14 @@ async function doExport() {
     if (method === 'webcodecs') {
       try { result = await exportWebCodecs({ W, H, fps, onProgress, signal: exportAbort.signal }); }
       catch (e) {
-        if (e.name === 'AbortError') throw e;
-        console.error(e); onProgress(0, `Frame-accurate export failed (${e.message}). Falling back to real-time recording…`); await sleep(1200);
+        if (e && e.name === 'AbortError') throw e;
+        console.error(e); onProgress(0, `Frame-accurate export failed (${errText(e)}). Falling back to real-time recording…`); await sleep(1200);
         result = await exportRealtime({ W, H, fps, onProgress, signal: exportAbort.signal, vids });
       }
     } else result = await exportRealtime({ W, H, fps, onProgress, signal: exportAbort.signal, vids });
     showExportResult(result);
   } catch (e) {
-    console.error(e); $('#exportStatus').innerHTML = `<span style="color:var(--err)">${e.name === 'AbortError' ? 'Export cancelled.' : 'Export failed: ' + (e.message || e)}</span>`;
+    console.error(e); $('#exportStatus').innerHTML = `<span style="color:var(--err)">${e && e.name === 'AbortError' ? 'Export cancelled.' : 'Export failed: ' + escapeHtml(errText(e))}</span>`;
   } finally { exportAbort = null; $('#exportBtn').disabled = false; keepAwake(false); if (player) { player.curRun = -1; player.redraw(); } }
 }
 function showExportResult(r) {
@@ -2145,7 +2274,7 @@ function showExportResult(r) {
 async function shareExport() {
   const ex = ui.lastExport; if (!ex) return;
   const file = new File([ex.blob], ex.name, { type: ex.blob.type });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: 'Reel' }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+  if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: 'Reel' }); return; } catch (e) { if (e && e.name === 'AbortError') return; } }
   $('#downloadLink').click();
 }
 
@@ -2174,6 +2303,9 @@ function buildStatusTable() {
 }
 
 /* ---------- wiring ---------- */
+function escapeHtml(t) { return String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+window.addEventListener('error', (ev) => { const m = errText(ev.error || ev.message); console.error('Uncaught', ev.error || ev.message); try { log('Unexpected error: ' + m, 'err'); } catch (x) { } });
+window.addEventListener('unhandledrejection', (ev) => { console.error('Unhandled rejection', ev.reason); try { log('Unexpected error: ' + errText(ev.reason), 'err'); } catch (x) { } });
 function wire() {
   buildStyleGrid(); buildStatusTable();
   $('#gradePreset').innerHTML = Object.entries(GRADES).map(([k, g]) => `<option value="${k}">${g.label}</option>`).join('');
@@ -2260,4 +2392,4 @@ function wire() {
   loadMediabunny();
 }
 wire();
-window.__reels = { state, runAutoEdit, renderMix, exportWebCodecs, exportRealtime, exportCapabilities, get player() { return player; } };
+window.__reels = { state, probeMedia, decodeAudioFromFile, runAutoEdit, renderMix, exportWebCodecs, exportRealtime, exportCapabilities, get player() { return player; } };

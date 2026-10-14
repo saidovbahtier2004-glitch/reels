@@ -360,8 +360,11 @@ details summary{cursor:pointer;font-weight:700}
 </main>
 
 <!-- hidden working elements -->
-<video id="vidA" playsinline muted preload="auto" style="display:none"></video>
-<video id="vidB" playsinline muted preload="auto" style="display:none"></video>
+<!-- iOS only decodes frames for videos that are in the layout, so keep them 2px and invisible instead of display:none -->
+<div id="videoPool" style="position:fixed;left:0;bottom:0;width:2px;height:2px;overflow:hidden;opacity:0;pointer-events:none">
+  <video id="vidA" playsinline webkit-playsinline muted preload="auto" style="width:2px;height:2px"></video>
+  <video id="vidB" playsinline webkit-playsinline muted preload="auto" style="width:2px;height:2px"></video>
+</div>
 <audio id="previewAudio" preload="auto" style="display:none"></audio>
 
 <script type="module" src="app.js"></script>

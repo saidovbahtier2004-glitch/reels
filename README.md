@@ -69,3 +69,15 @@ No part of the app calls itself "AI" unless a real model is involved. The only r
 * **Frame-accurate export** uses WebCodecs to encode H.264 + AAC into MP4. It renders every frame exactly, at any speed. It needs both a video and an audio encoder, which Chrome, Edge and Android have. Safari supports it only in versions that include the WebCodecs `AudioEncoder`.
 * If that isn't available, the app falls back to **real-time recording** with MediaRecorder: canvas and the mixed audio, saved as MP4 on Safari. This takes as long as the video. Keep Safari in the foreground with the screen on. The app asks the screen to stay awake where it's supported.
 * Either way, the exported file includes the full mixed soundtrack: original audio, music and effects.
+
+## Troubleshooting (iPhone)
+
+When you press AUTO EDIT, the log under the progress bar shows:
+* your browser and its capabilities (WebCodecs decoders and encoders, WebGL2, MediaRecorder);
+* the file's container and codecs, and whether each track can be decoded;
+* which method decoded the original audio. The app tries three, in this order: (1) copy the audio track into a small .m4a and decode it with Web Audio, (2) decode with WebCodecs, (3) decode the whole file with Web Audio.
+
+If the original audio can't be decoded, AUTO EDIT **stops** and lists why each method failed, instead of quietly making a silent edit. You can then try again, re-save the clip from Photos as *Most Compatible*, or tap **Continue without original audio**.
+
+If the video won't open, the message includes the browser's own media error code and reason.
+
