@@ -216,7 +216,7 @@ details summary{cursor:pointer;font-weight:700}
     <div class="legend">
       <span><i style="background:#3b82f6"></i>kept clip</span><span><i style="background:#ff3d6e"></i>zoom</span>
       <span><i style="background:#f5b041"></i>transition</span><span><i style="background:#2ecc71"></i>sound FX</span>
-      <span><i style="background:#c084fc"></i>speed ramp</span><span><i style="background:#ffffff"></i>beat</span>
+      <span><i style="background:#c084fc"></i>speed ramp</span><span><i style="background:#ffffff"></i>beat</span><span><i style="background:#22d3ee"></i>motion graphic</span>
     </div>
     <p class="muted">Sound comes from the edited mix (original audio + music + effects). On iPhone, if you hear nothing, turn the ringer switch on or raise the volume.</p>
   </section>
@@ -257,13 +257,15 @@ details summary{cursor:pointer;font-weight:700}
       <label class="chk"><input type="checkbox" id="fxMotionBlur" checked> Motion blur on fast moves</label>
       <label class="chk"><input type="checkbox" id="fxRamps" checked> Speed ramps / slow motion (only on non-speech action)</label>
       <label class="chk"><input type="checkbox" id="fxBeatPulse" checked> Light pulses on music beats</label>
-      <label class="chk"><input type="checkbox" id="fxGraphics" checked> Motion graphics (tracking brackets, light sweep, speed lines)</label>
+      <label class="chk"><input type="checkbox" id="fxGraphics" checked> Motion graphics (titles, kinetic keywords, subject callouts, tags, light sweep, speed lines)</label>
       <label class="chk"><input type="checkbox" id="fxProgress"> Progress bar</label>
       <label class="chk"><input type="checkbox" id="letterbox"> Letterbox bars (cinema look)</label>
       <div class="two">
-        <div><label class="f">Transition type</label><select id="transType"><option value="auto">Style default (smart mix)</option><option value="none">Hard cuts only</option><option value="crossfade">Crossfade</option><option value="flash">White flash</option><option value="dip">Dip to black</option><option value="zoomblast">Zoom punch</option><option value="whip">Whip pan</option><option value="leak">Light leak</option><option value="glitch">Glitch</option></select></div>
+        <div><label class="f">Transition type</label><select id="transType"><option value="auto">Style default (smart mix)</option><option value="none">Hard cuts only</option><option value="crossfade">Crossfade</option><option value="flash">White flash</option><option value="dip">Dip to black</option><option value="zoomblast">Zoom punch</option><option value="whip">Whip pan</option><option value="leak">Light leak</option><option value="glitch">Glitch</option><option value="wipe">Directional wipe</option></select></div>
         <div><label class="f">How often <span id="transFreqV"></span></label><input type="range" id="transFreq" min="0" max="2" step="0.1" value="1"></div>
       </div>
+      <div class="muted" style="margin-top:10px">Motion graphics in this edit:</div>
+      <div class="list" id="mgList"></div>
       <div class="list" id="transList"></div>
     </div>
 
@@ -315,6 +317,7 @@ details summary{cursor:pointer;font-weight:700}
       <label class="f">Hook title (animated, first ~2.5 s). Leave empty for none.</label>
       <input type="text" id="hookText" maxlength="60" placeholder="e.g. 3 mistakes everyone makes">
       <button class="btn small" id="hookFromSpeech" style="margin-top:6px">Use first spoken sentence</button>
+      <label class="chk"><input type="checkbox" id="autoTitle" checked> If the hook is empty, animate the first spoken sentence as a title (Viral, Sports, Beat Montage; needs subtitles)</label>
       <label class="f">Speaker / brand name (lower-third, podcast &amp; product styles)</label>
       <input type="text" id="lowerThird" maxlength="40" placeholder="e.g. Alex · Founder">
       <label class="f">Call to action at the end (optional)</label>

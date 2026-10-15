@@ -12,6 +12,34 @@ Fixed and new:
 * **Frame-accurate MP4 export** where the browser supports it. Real-time recording remains as the fallback.
 * Speech-aware pause and filler removal, subject-aware punch zooms, speed ramps, light leaks, glitch, motion blur, camera shake, risers and bass hits. Also animated subtitles in five styles (via Whisper speech recognition or an `.srt`), a hook title, lower third, CTA, and an editable list for every cut, zoom, transition and sound effect.
 
+## Motion graphics (HyperFrames-style)
+
+Each preset applies its own set of motion-graphics templates on top of **your** footage. They are composited into the exported video, not just the preview:
+
+| Preset | Title card | Other graphics | Transitions |
+|---|---|---|---|
+| Viral Reels | stacked colour bars, words pop in | kinetic keywords, ring + arrow callout on the subject during punch-ins, progress bar | zoom blast, wipe, flash, whip |
+| Cinematic | serif, letter-spacing settles, gold rules | animated cinema bars, light leaks | light leak, soft flash, whip |
+| Podcast | clean text with accent underline | lower third, karaoke captions, jump-cut reframing | hard cuts |
+| Sports / MMA | slanted stripes, slam-in with shake | tracking reticle on the subject, kinetic keywords, SLOW-MO tag on speed ramps, speed lines | whip, wipe, flash, glitch, zoom blast |
+| Product Ad | white card with drawn underline | labelled pointer callouts, light sweeps | soft flash, wipe, zoom blast |
+| Clean & Minimal | small fading text | none (on purpose) | hard cuts |
+| Beat Montage | stacked (Bebas) | beat-frame pulse on every downbeat | crossfade, wipe, flash, zoom blast, whip, dip, all on the beat |
+
+Rules that keep it from looking random:
+* Text is never invented. Titles use your hook text, or the first spoken sentence if subtitles exist. Kinetic keywords use real subtitle words.
+* Callouts only appear where a subject was actually detected (skin tone or motion heuristics).
+* Titles and keywords move to a different band of the frame when the subject is in the way.
+* Captions hide while a title or keyword repeats the same words.
+
+Every graphic is listed under **Adjust → Effects**, where you can switch each one off and preview it.
+
+### About HyperFrames
+
+[HyperFrames](https://github.com/heygen-com/hyperframes) (HeyGen, Apache-2.0) describes videos as HTML compositions: timed clips (`data-start`, `data-duration`, `data-track-index`) that can be seeked to any frame. Its MP4 renderer, `@hyperframes/engine` and `@hyperframes/producer`, runs the composition in **headless Chrome through Puppeteer and encodes with FFmpeg on Node.js 22+**. GitHub Pages is static hosting, and iPhone Safari can't run Node, Puppeteer or FFmpeg. Its in-browser player only plays compositions and cannot export your clip with graphics burned in.
+
+So this app does **not** run HyperFrames code. It uses the same composition model (timed, seekable clips on tracks), rendered natively into the canvas that the WebCodecs/MediaRecorder exporter already encodes. No server, no paid API.
+
 ## Files
 
 | File | Purpose |
