@@ -477,30 +477,35 @@ function buildInterestTrack(samples, sceneCuts) {
     else if (s.motion > 0.02) { x = s.mx; y = s.my; w = 0.35; }
     return { t: s.t, x, y, w };
   });
-  // forward/backward weighted smoothing, reset at scene cuts
-  const out = pts.map((p) => ({ ...p }));
+  // forward/backward (zero-phase) weighted smoothing, reset at scene cuts
   const isCut = (t0, t1) => sceneCuts.some((c) => c > t0 && c <= t1);
-  for (let pass = 0; pass < 2; pass++) {
-    const idx = pass === 0 ? [...out.keys()] : [...out.keys()].reverse();
-    let px = null, py = null, pt = null;
-    for (const i of idx) {
-      const p = out[i];
-      if (px === null || isCut(Math.min(pt, p.t), Math.max(pt, p.t))) { px = p.x; py = p.y; }
-      else { const a = clamp(0.7 * p.w, 0.2, 0.75); px = lerp(px, p.x, a); py = lerp(py, p.y, a); }
-      p.x = px; p.y = py; pt = p.t;
+  const smoothTrack = (alpha) => {
+    const out = pts.map((p) => ({ ...p }));
+    for (let pass = 0; pass < 2; pass++) {
+      const idx = pass === 0 ? [...out.keys()] : [...out.keys()].reverse();
+      let px = null, py = null, pt = null;
+      for (const i of idx) {
+        const p = out[i];
+        if (px === null || isCut(Math.min(pt, p.t), Math.max(pt, p.t))) { px = p.x; py = p.y; }
+        else { const a = alpha(p.w); px = lerp(px, p.x, a); py = lerp(py, p.y, a); }
+        p.x = px; p.y = py; pt = p.t;
+      }
     }
-  }
-  return out;
+    return out;
+  };
+  const fast = smoothTrack((w) => clamp(0.7 * w, 0.2, 0.75)); // follows the subject: callouts, zoom anchors
+  const calm = smoothTrack((w) => 0.25 * w);                    // steady: crop window for horizontal footage
+  return fast.map((p, i) => ({ ...p, fx: calm[i].x }));
 }
 function interestAt(t) {
   const tr = state.analysis && state.analysis.interest;
-  if (!tr || !tr.length) return { x: 0.5, y: 0.45 };
+  if (!tr || !tr.length) return { x: 0.5, y: 0.45, fx: 0.5 };
   if (t <= tr[0].t) return tr[0];
   if (t >= tr[tr.length - 1].t) return tr[tr.length - 1];
   let lo = 0, hi = tr.length - 1;
   while (hi - lo > 1) { const m = (lo + hi) >> 1; if (tr[m].t <= t) lo = m; else hi = m; }
   const a = tr[lo], b = tr[hi], f = (t - a.t) / (b.t - a.t);
-  return { x: lerp(a.x, b.x, f), y: lerp(a.y, b.y, f) };
+  return { x: lerp(a.x, b.x, f), y: lerp(a.y, b.y, f), fx: lerp(a.fx != null ? a.fx : a.x, b.fx != null ? b.fx : b.x, f) };
 }
 function motionAt(t) {
   const s = state.analysis && state.analysis.frames;
@@ -1264,7 +1269,7 @@ function computeView(edit, t, opts = {}) {
   const ci = clipIndexAt(edit, t); const clip = edit.clips[ci]; const run = edit.runs[clip.run];
   const lt = clamp(t - clip.out0, 0, clip.dur); const srcT = clipSrcAt(clip, lt);
   const v = { t, ci, run: clip.run, srcT, scale: 1, ax: 0.5, ay: 0.45, offX: 0, offY: 0, rot: 0, flash: 0, flashCol: [1, 1, 1], leak: 0, leakPh: 0, glitch: 0, ca: 0, glowBoost: 0, expBoost: 0, bypass: !!opts.bypass };
-  const ip = interestAt(srcT); v.ax = ip.x; v.ay = ip.y; v.fx = ip.x;
+  const ip = interestAt(srcT); v.ax = ip.x; v.ay = ip.y; v.fx = ip.fx != null ? ip.fx : ip.x;
   if (v.bypass) return v;
   v.scale = S.jumpZoom ? run.frameScale : 1;
   if (run.drift) { const q = smoothstep((t - run.out0) / Math.max(0.3, run.out1 - run.out0)); v.scale *= run.drift > 0 ? 1 + run.drift * q : 1 - run.drift * (1 - q); }
@@ -1482,7 +1487,7 @@ class Renderer {
     let mix2 = 0;
     if (v.xf && opts.other && opts.other.source && this.u.uMix2) {
       const o = opts.other; const ip = interestAt(v.xf.srcT);
-      const ov = { scale: S.jumpZoom ? state.edit.runs[v.xf.run].frameScale : 1, ax: ip.x, ay: ip.y, fx: ip.x, offX: 0, offY: 0, rot: 0 };
+      const ov = { scale: S.jumpZoom ? state.edit.runs[v.xf.run].frameScale : 1, ax: ip.x, ay: ip.y, fx: ip.fx != null ? ip.fx : ip.x, offX: 0, offY: 0, rot: 0 };
       const M2 = viewMatrix(ov, o.w / o.h, W, H, S.framing);
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.tex2);
       try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, o.source); mix2 = v.xf.mix; } catch (e) { }
@@ -1761,11 +1766,14 @@ const MG_TEMPLATES = {
   cta(ctx, c, lt, e) { drawCta(ctx, c.props.text, lt, e.W, e.H, e.L); },
 };
 
+const USER_TEXT_CLIP = (c) => c.tpl === 'lowerThird' || c.tpl === 'cta' || (c.tpl === 'title' && !c.props.fromSpeech);
 function drawComposition(ctx, edit, t, W, H, v) {
-  if (!edit.mg || !state.settings.fx.graphics) return;
+  if (!edit.mg) return;
+  const decor = state.settings.fx.graphics; // the switch hides decorative graphics, never text the user typed
   const S = state.settings; const env = { W, H, k: W / 1080, v, t, edit, L: MG_LOOKS[S.style] || MG_LOOKS.viral, style: S.style };
   for (const c of edit.mg) {
     if (!c.enabled || t < c.start || t >= c.start + c.dur) continue;
+    if (!decor && !USER_TEXT_CLIP(c)) continue;
     const tpl = MG_TEMPLATES[c.tpl]; if (!tpl) continue;
     ctx.save();
     try { tpl(ctx, c, t - c.start, env); } catch (err) { console.warn('motion graphic failed', c.tpl, errText(err)); }
@@ -2407,12 +2415,13 @@ function fillZoomList() {
       <label class="f">Hold <span class="hv">${z.hold.toFixed(1)}s</span><input type="range" class="hold" min="0.1" max="4" step="0.1" value="${z.hold}"></label></div>
       <select class="ty"><option value="punch">Punch-in (fast)</option><option value="smooth">Smooth push-in</option></select>`;
     d.querySelector('.ty').value = z.type;
-    d.querySelector('.en').onchange = (e) => { z.enabled = e.target.checked; d.classList.toggle('off', !z.enabled); redraw(); drawTimeline(); };
+    d.querySelector('.en').onchange = (e) => { z.enabled = e.target.checked; d.classList.toggle('off', !z.enabled); refreshComposition(); redraw(); };
     d.querySelector('.amt').oninput = (e) => { z.amt = 1 + e.target.value / 100; d.querySelector('.av').textContent = e.target.value + '%'; redraw(); };
     d.querySelector('.hold').oninput = (e) => { z.hold = +e.target.value; d.querySelector('.hv').textContent = z.hold.toFixed(1) + 's'; redraw(); drawTimeline(); };
+    d.querySelector('.hold').onchange = () => refreshComposition();
     d.querySelector('.ty').onchange = (e) => { z.type = e.target.value; z.attack = z.type === 'punch' ? 0.14 : 0.7; z.release = z.type === 'punch' ? 0.35 : 0.9; redraw(); drawTimeline(); };
     d.querySelector('.pv').onclick = () => player.playRange(Math.max(0, z.t - 0.6), z.t + z.attack + z.hold + z.release + 0.4);
-    d.querySelector('.del').onclick = () => { state.edit.zooms.splice(i, 1); fillZoomList(); redraw(); drawTimeline(); };
+    d.querySelector('.del').onclick = () => { state.edit.zooms.splice(i, 1); fillZoomList(); refreshComposition(); redraw(); };
     box.appendChild(d);
   });
 }
@@ -2617,7 +2626,7 @@ function wire() {
   $('#addZoomBtn').onclick = () => {
     if (!state.edit) return; const t = player.t; const { srcT } = player.sourceFor(t); const ip = interestAt(srcT); const st = STYLES[state.settings.style];
     state.edit.zooms.push({ id: 'zm' + Date.now(), t, attack: 0.14, hold: 0.8, release: 0.35, amt: Math.max(1.15, st.zoomAmt), type: 'punch', ax: ip.x, ay: ip.y, enabled: true, why: 'added manually', v: 1 });
-    state.edit.zooms.sort((a, b) => a.t - b.t); fillZoomList(); redraw(); drawTimeline();
+    state.edit.zooms.sort((a, b) => a.t - b.t); fillZoomList(); refreshComposition(); redraw();
   };
   const fxMap = { fxTransitions: 'transitions', fxShake: 'shake', fxMotionBlur: 'motionBlur', fxBeatPulse: 'beatPulse', fxGraphics: 'graphics', fxProgress: 'progress' };
   for (const [id, key] of Object.entries(fxMap)) $('#' + id).onchange = (e) => { state.settings.fx[key] = e.target.checked; redraw(); };
@@ -2658,4 +2667,4 @@ function wire() {
   loadMediabunny();
 }
 wire();
-window.__reels = { state, probeMedia, decodeAudioFromFile, runAutoEdit, renderMix, exportWebCodecs, exportRealtime, exportCapabilities, get player() { return player; } };
+window.__reels = { state, probeMedia, decodeAudioFromFile, computeView, interestAt, refreshComposition, runAutoEdit, renderMix, exportWebCodecs, exportRealtime, exportCapabilities, get player() { return player; } };
