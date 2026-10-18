@@ -3,3 +3,8 @@ reel/edit/out/
 reel/edit/frames/
 reel/edit/source.mp4
 reel/edit/*.wav
+reel/x/out/
+reel/x/frames/
+reel/x/source.mp4
+reel/x/*.wav
+reel/x/*.bak
