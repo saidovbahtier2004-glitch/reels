@@ -2,3 +2,4 @@ reel/out/
 reel/edit/out/
 reel/edit/frames/
 reel/edit/source.mp4
+reel/edit/*.wav
