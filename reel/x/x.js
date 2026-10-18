@@ -9,7 +9,7 @@ const yg = (c, x0, y0, x1, y1) => linGrad(c, x0, y0, x1, y1, [[0, Y1], [1, Y2]])
 const sine = (T, f, p = 0) => Math.sin(T * f + p);
 
 // ---------- camera program ----------
-const EZ = { soft: E.inOutS, punch: E.outE, out: E.outC, in: E.inE, lin: E.lin };
+const EZ = { soft: E.inOutS, punch: E.outE, out: E.outC, in: t => t * t, lin: E.lin };
 let TRACK = [], WHIPS = [], RAMPS = [], SRCCUT = [];
 function buildCamera() {
   const K = []; const k = (t, z, roll = 0, ease = 'soft', bx = 0, by = 0) => K.push({ t, z, roll, ease, bx, by });

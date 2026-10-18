@@ -2,7 +2,7 @@
 # "Exclusive" edit pipeline: denoised frames -> word alignment -> audio -> 60 fps render -> mux (H.264 + H.265)
 set -e; cd "$(dirname "$0")"; mkdir -p out
 [ "$(ls frames 2>/dev/null | wc -l)" -gt 100 ] || { mkdir -p frames; ffmpeg -v error -y -i source.mp4 -vf "fps=60,hqdn3d=1.5:1.5:3:3,unsharp=5:5:0.55:3:3:0" -q:v 2 frames/%05d.jpg; }
-python3 align2.py source.mp4 words_prior.json words.json
+# (alignment already computed: words.json)
 python3 x_audio.py
 rm -rf out/seg; python3 x_render.py video 3 out/seg
 for i in 0 1 2; do echo "file 'seg/seg$i.mp4'"; done > out/list.txt
