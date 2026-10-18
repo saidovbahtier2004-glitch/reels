@@ -144,7 +144,7 @@ async function renderEdit(T) {
 }
 async function initEdit(words, face, total) {
   WD = words; FACE = face; TOTAL = total; CNV = document.getElementById('c'); CNV.width = W; CNV.height = H; CTX = CNV.getContext('2d');
-  CUTS = [{ id: 'ai', a: w0(33) - .25, b: w1(36) + .15 }, { id: 'tg', a: w0(56) - .05, b: w1(62) + .1 }, { id: 'plus', a: w0(67) + .4, b: w1(71) + .6 }, { id: 'link', a: w0(78) - .35, b: w1(79) + .35 }];
+  CUTS = [{ id: 'ai', a: w0(33) - .25, b: w1(36) + .15 }, { id: 'tg', a: w0(56) - .05, b: w1(62) + .1 }, { id: 'plus', a: w0(67) + .4, b: w1(71) + .25 }, { id: 'link', a: w0(78) - .3, b: w1(79) + .35 }];
   TRACK = trackExtra(buildTrack());
 }
 window.initEdit = initEdit; window.renderEdit = renderEdit;

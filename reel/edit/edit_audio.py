@@ -6,7 +6,7 @@ ns = {}; exec(head, ns); globals().update({k: v for k, v in ns.items() if not k.
 music_defs = src.split("# ---------- MUSIC ----------")[1].split("for b in range(bars):")[0]
 exec(music_defs.replace("def inten(t):", "def _old(t):"), globals())
 WD = json.load(open("words.json"))["words"]; w0 = lambda i: WD[i]["t0"]; w1 = lambda i: WD[i]["t1"]
-CUTS = [(w0(33) - .25, w1(36) + .15), (w0(56) - .05, w1(62) + .1), (w0(67) + .4, w1(71) + .6), (w0(78) - .35, w1(79) + .35)]
+CUTS = [(w0(33) - .25, w1(36) + .15), (w0(56) - .05, w1(62) + .1), (w0(67) + .4, w1(71) + .25), (w0(78) - .3, w1(79) + .35)]
 ev = []
 def E_(fn, t, g=0, pan=0): ev.append((fn, t, g, pan))
 # hook
