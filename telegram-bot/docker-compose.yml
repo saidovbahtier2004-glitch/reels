@@ -1,0 +1,11 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    # Temporary files are written to /tmp inside the container only.
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g
+    security_opt:
+      - no-new-privileges:true
