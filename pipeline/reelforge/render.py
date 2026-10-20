@@ -4,6 +4,7 @@ Decode (ffmpeg, once) -> grade at source res -> virtual camera (zoom, punch, sha
 over the shutter for true motion blur -> single Lanczos resample to output size -> transition
 effects (flash, RGB-split glitch) -> kinetic text layers -> ffmpeg encode (one generation, BT.709).
 """
+import collections
 import math
 import multiprocessing as mp
 import os
@@ -252,8 +253,21 @@ def render(plan, out_path, workdir, workers=None, limit_frames=None, start_frame
     done = 0
     try:
         with mp.get_context("fork").Pool(workers, initializer=_init_worker, initargs=(plan,)) as pool:
-            for fb in pool.imap(render_frame, _frames(dec, plan, limit_frames), chunksize=1):
-                encp.stdin.write(fb)
+            # bounded in-flight window: decoding is far faster than rendering, so an unbounded
+            # imap would queue every decoded frame in RAM
+            pending = collections.deque()
+            frames = _frames(dec, plan, limit_frames)
+            exhausted = False
+            while pending or not exhausted:
+                while not exhausted and len(pending) < workers * 2:
+                    item = next(frames, None)
+                    if item is None:
+                        exhausted = True
+                    else:
+                        pending.append(pool.apply_async(render_frame, (item,)))
+                if not pending:
+                    break
+                encp.stdin.write(pending.popleft().get())
                 done += 1
                 if done % 60 == 0 or done == total:
                     log("  frame %d/%d (%.0f%%)" % (done, total, 100.0 * done / max(1, total)))
