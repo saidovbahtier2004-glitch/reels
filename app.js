@@ -112,6 +112,14 @@ const STYLES = {
     shake: 0.1, ramps: 0.5, beatPulse: 0.5, grade: 'bright', captions: 'minimal', capWords: 5,
     progress: false, graphics: ['sweep'], highlight: false, motionBlur: true,
   },
+  tech: {
+    name: 'Tech Promo', desc: 'Dark red tech ad: giant type, glitch cuts, flashes',
+    keepPause: 0.14, zoomGap: 2.2, zoomAmt: 1.2, zoomType: 'punch', jumpZoom: 1.1, kenBurns: 0.04,
+    transitions: ['glitch', 'flash', 'whip', 'zoomblast', 'wipe'], transRate: 0.9, jumpTransRate: 0.35,
+    sfx: { whoosh: 1, impact: 0.8, riser: 1, bass: 0.8, glitch: 1 },
+    shake: 0.45, ramps: 0.4, beatPulse: 0.5, grade: 'redtech', captions: 'tech', capWords: 3,
+    progress: false, graphics: ['scanlines', 'redsweep'], highlight: false, motionBlur: true, redFlash: true, textHits: true,
+  },
   minimal: {
     name: 'Clean & Minimal', desc: 'Gentle cuts, subtle zooms, simple captions',
     keepPause: 0.35, zoomGap: 6, zoomAmt: 1.07, zoomType: 'smooth', jumpZoom: 1.06, kenBurns: 0.02,
@@ -129,7 +137,7 @@ STYLES.montage = {
   shake: 0.3, ramps: 0, beatPulse: 0.6, pulseZoom: 0.03, grade: 'teal', captions: 'viral', capWords: 3,
   progress: false, graphics: [], highlight: true, motionBlur: true, montage: true,
 };
-for (const k of Object.keys(STYLES)) if (STYLES[k].pulseZoom == null) STYLES[k].pulseZoom = { viral: 0.025, sports: 0.045 }[k] || 0;
+for (const k of Object.keys(STYLES)) if (STYLES[k].pulseZoom == null) STYLES[k].pulseZoom = { viral: 0.025, sports: 0.045, tech: 0.03 }[k] || 0;
 const INTENSITY = {
   subtle: { dens: 0.55, pauseMul: 1.9, pad: 1.35, keepFrac: 0.75 },
   balanced: { dens: 1, pauseMul: 1, pad: 1, keepFrac: 0.55 },
@@ -141,6 +149,7 @@ const CAPTION_DEFAULTS = {
   podcast: { font: 'Poppins', upper: false, size: 85, pos: 72, color: '#ffffff', hl: '#22d3ee', stroke: '#000000', words: 6 },
   sports: { font: 'Anton', upper: true, size: 115, pos: 66, color: '#ffffff', hl: '#ffd400', stroke: '#000000', words: 2 },
   minimal: { font: 'Inter', upper: false, size: 72, pos: 80, color: '#ffffff', hl: '#a5f3fc', stroke: '#000000', words: 6 },
+  tech: { font: 'Anton', upper: true, size: 120, pos: 70, color: '#ffffff', hl: '#ff1f3d', stroke: '#000000', words: 3 },
 };
 const GRADES = {
   neutral: { label: 'Natural', exposure: 0, contrast: 1.05, saturation: 1.05, warmth: 0, tint: 0, shadows: 0, highlights: -0.03, split: 0, glow: 0.08, vignette: 0.15, grain: 0, sharpen: 0.15 },
@@ -153,6 +162,7 @@ const GRADES = {
   moody: { label: 'Moody', exposure: -0.06, contrast: 1.22, saturation: 0.72, warmth: -0.06, tint: 0, shadows: -0.04, highlights: -0.12, split: 0.35, glow: 0.15, vignette: 0.5, grain: 0.04, sharpen: 0.15 },
   vivid: { label: 'Vivid pop', exposure: 0.03, contrast: 1.12, saturation: 1.38, warmth: 0.02, tint: 0, shadows: 0.02, highlights: -0.04, split: 0.05, glow: 0.2, vignette: 0.15, grain: 0, sharpen: 0.35 },
   vintage: { label: 'Vintage fade', exposure: 0.02, contrast: 0.9, saturation: 0.74, warmth: 0.1, tint: 0.03, shadows: 0.12, highlights: -0.08, split: 0.2, glow: 0.15, vignette: 0.35, grain: 0.09, sharpen: 0 },
+  redtech: { label: 'Dark tech red', exposure: -0.04, contrast: 1.24, saturation: 0.92, warmth: 0.06, tint: -0.01, shadows: -0.03, highlights: -0.1, split: 0.08, glow: 0.32, vignette: 0.5, grain: 0.03, sharpen: 0.3 },
   bw: { label: 'Black & white film', exposure: 0, contrast: 1.25, saturation: 0, warmth: 0, tint: 0, shadows: 0, highlights: -0.05, split: 0, glow: 0.2, vignette: 0.4, grain: 0.09, sharpen: 0.2 },
 };
 const LOOK_SLIDERS = [
@@ -1051,6 +1061,7 @@ function finishEdit(clips, mode, segments, musicOffset, montage) {
   edit.shakes = []; edit.sfx = []; edit.pulses = [];
   const addSfx = (type, t, gain, why) => { if (t + 0.1 < 0 || t > total) return; if (edit.sfx.some((x) => x.type === type && Math.abs(x.t - t) < 0.5)) return; edit.sfx.push({ id: 's' + edit.sfx.length, type, t, gain, why, enabled: true }); };
   for (const tr of edit.transitions) {
+    if (tr.type === 'glitch' && st.sfx.glitch) { addSfx('glitch', tr.t - 0.15, 0.7, 'glitch transition'); continue; }
     if (st.sfx.whoosh > 0 && ['whip', 'zoomblast', 'glitch', 'leak', 'flash', 'crossfade', 'dip', 'wipe'].includes(tr.type) && hash1(tr.t * 3.1) < st.sfx.whoosh * it.dens)
       addSfx('whoosh', tr.t - 0.33, ['leak', 'crossfade', 'dip'].includes(tr.type) ? 0.5 : 0.85, tr.type + ' transition');
   }
@@ -1073,12 +1084,18 @@ function finishEdit(clips, mode, segments, musicOffset, montage) {
     const target = dropOut || (edit.transitions.find((x) => x.t > 2.6) || {}).t || (edit.zooms.find((z) => z.t > 2.6) || {}).t;
     if (target) { addSfx('riser', target - 2.2, 0.55 * st.sfx.riser, 'build-up into ' + (dropOut ? 'music drop' : 'key moment')); if (dropOut && st.sfx.bass) addSfx('bass', dropOut, 0.9, 'music drop'); }
   }
-  edit.sfx.sort((a, b) => a.t - b.t);
   for (const b of beatsOut) if (b.t < total) edit.pulses.push({ t: b.t, down: b.down, glow: (b.down || S.intensity === 'aggressive') ? st.beatPulse * (b.down ? 1 : 0.5) * (0.4 + 0.6 * b.v) : 0 });
   if (montage && st.sfx.impact > 0 && beatsOut.length) addSfx('impact', 0, 0.7, 'first downbeat');
   edit.speech = speechIntervalsOut(edit);
   edit.captions = buildCaptions(edit);
   buildComposition(edit);
+  // sound locked to the type: a hit on every title card, kinetic keyword and call to action
+  if (st.textHits) for (const c of edit.mg) {
+    if (c.tpl === 'title') addSfx('bass', c.start + 0.05, 0.9, 'title card hit');
+    else if (c.tpl === 'slam') addSfx('impact', c.start + 0.03, 0.7, `keyword hit: ${c.props.text}`);
+    else if (c.tpl === 'cta') { addSfx('riser', c.start - 2.2, 0.45, 'build-up into call to action'); addSfx('bass', c.start + 0.05, 0.8, 'call to action hit'); }
+  }
+  edit.sfx.sort((a, b) => a.t - b.t);
   return edit;
 }
 
@@ -1176,7 +1193,23 @@ async function makeSfx() {
     const ws = c.createWaveShaper(); ws.curve = tanhCurve(2);
     o.connect(g); g.connect(ws); ws.connect(c.destination); o.start(0); o.stop(1.5);
   });
-  sfxBuffers = { whoosh, impact, riser, bass };
+  // digital stutter: square bursts hopping between pitches, gated noise crackle
+  const glitch = await synth(0.36, (c) => {
+    const o = c.createOscillator(); o.type = 'square'; const og = c.createGain(); og.gain.setValueAtTime(0, 0);
+    const n = c.createBufferSource(); n.buffer = noiseBuffer(c, 0.36); const hp = c.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 3000;
+    const ng = c.createGain(); ng.gain.setValueAtTime(0, 0);
+    const pitches = [880, 220, 1320, 440, 1760, 330, 990, 660];
+    for (let i = 0; i < 12; i++) {
+      const t = i * 0.028, on = hash1(i * 7.1 + 3) > 0.25;
+      o.frequency.setValueAtTime(pitches[i % pitches.length], t);
+      og.gain.setValueAtTime(on ? 0.22 * (1 - i / 14) : 0, t); og.gain.setValueAtTime(0, t + 0.02);
+      ng.gain.setValueAtTime(on ? 0 : 0.5 * (1 - i / 14), t); ng.gain.setValueAtTime(0, t + 0.018);
+    }
+    const ws = c.createWaveShaper(); ws.curve = tanhCurve(3);
+    o.connect(og); og.connect(ws); n.connect(hp); hp.connect(ng); ng.connect(ws); ws.connect(c.destination);
+    o.start(0); o.stop(0.36); n.start(0);
+  });
+  sfxBuffers = { whoosh, impact, riser, bass, glitch };
   return sfxBuffers;
 }
 
@@ -1283,7 +1316,7 @@ function computeView(edit, t, opts = {}) {
     if (!tr.enabled) continue; const hd = tr.dur / 2; const u = (t - tr.t) / hd; if (u <= -1 || u >= 1) continue;
     const k = 1 - Math.abs(u);
     switch (tr.type) {
-      case 'flash': v.flash = Math.max(v.flash, Math.pow(k, 2) * 0.95); v.expBoost += 0.25 * k; break;
+      case 'flash': v.flash = Math.max(v.flash, Math.pow(k, 2) * 0.95); v.expBoost += 0.25 * k; if (st.redFlash && hash1(tr.t * 5.3) > 0.5) v.flashCol = [1, 0.07, 0.15]; break;
       case 'flashsoft': v.flash = Math.max(v.flash, Math.pow(k, 1.5) * 0.55); v.flashCol = [1, 0.93, 0.84]; break;
       case 'whip': v.offX += (u < 0 ? -tr.dir * easeInCubic(1 + u) : tr.dir * (1 - easeOutCubic(u))) * 0.5; break;
       case 'zoomblast': v.scale *= 1 + 0.6 * Math.pow(k, 2); v.flash = Math.max(v.flash, 0.22 * Math.pow(k, 3)); break;
@@ -1545,6 +1578,7 @@ const MG_LOOKS = {
   sports: { accent: '#ffd400', accent2: '#ff2d2d', ink: '#ffffff', font: 'Anton', weight: 400, title: 'sport', slam: true, slamGap: 4, callout: 'track', calloutGap: 3.5, replay: true, autoTitle: true },
   product: { accent: '#7c5cff', accent2: '#ffffff', ink: '#111118', font: 'Inter', weight: 800, title: 'product', slam: false, callout: 'label', calloutGap: 5, autoTitle: false },
   minimal: { accent: '#ffffff', accent2: '#ffffff', ink: '#ffffff', font: 'Inter', weight: 600, title: 'minimal', slam: false, callout: null, autoTitle: false },
+  tech: { accent: '#ff1f3d', accent2: '#ffffff', ink: '#0b0b0d', font: 'Anton', weight: 400, title: 'tech', slam: true, slamLook: 'tech', slamGap: 3.2, callout: 'bracket', calloutGap: 4.5, autoTitle: true, cta: '#c8ff2e', ctaDur: 3.2 },
   montage: { accent: '#ff3d6e', accent2: '#7c5cff', ink: '#ffffff', font: 'Bebas Neue', weight: 400, title: 'stack', slam: true, slamGap: 4, callout: null, beatFrame: true, autoTitle: true },
 };
 const MG_NAMES = { title: 'Animated title card', slam: 'Kinetic keyword', callout: 'Subject callout', replay: 'Slow-motion tag', beatFrame: 'Beat frame pulse', bars: 'Cinema bars', lowerThird: 'Lower third', cta: 'Call to action' };
@@ -1583,8 +1617,11 @@ function buildComposition(edit) {
   let titleEnd = 0;
   if (titleText) {
     const d = L.title === 'cinema' ? 3.4 : 2.7, pref = L.title === 'cinema' ? 0.3 : 0.2;
-    add('title', 0.05, d, 4, { text: titleText, look: L.title, fromSpeech: !S.hookText, bandY: bandAvoiding(edit, 0.05, d, pref, L.title === 'cinema' ? 0.56 : 0.5) }, 'title'); titleEnd = 0.05 + d;
+    // the tech card darkens the whole frame, so it always sits in the middle
+    const bandY = L.title === 'tech' ? 0.44 : bandAvoiding(edit, 0.05, d, pref, L.title === 'cinema' ? 0.56 : 0.5);
+    add('title', 0.05, d, 4, { text: titleText, look: L.title, fromSpeech: !S.hookText, bandY }, 'title'); titleEnd = 0.05 + d;
   }
+  const ctaDur = L.ctaDur || 2.4, ctaStart = S.ctaText ? edit.duration - ctaDur : edit.duration;
   if (L.bars) add('bars', 0, edit.duration, 0, {}, 'bars');
   if (L.slam && edit.captions.length) {
     const cands = [];
@@ -1592,7 +1629,7 @@ function buildComposition(edit) {
     cands.sort((a, b) => b.k - a.k);
     const chosen = []; const gap = L.slamGap / it.dens;
     for (const w of cands) {
-      if (w.s < titleEnd + 0.2 || w.s > edit.duration - 0.8) continue;
+      if (w.s < titleEnd + 0.2 || w.s > edit.duration - 0.8 || w.s + 1.4 > ctaStart) continue;
       if (chosen.some((c) => Math.abs(c.s - w.s) < gap)) continue;
       chosen.push(w);
     }
@@ -1613,7 +1650,7 @@ function buildComposition(edit) {
   if (L.replay) for (const c of edit.clips) if (c.r0 < 0.95 && c.r1 < 0.95) add('replay', c.out0, c.dur + 0.15, 4, { rate: Math.min(c.r0, c.r1) });
   if (L.beatFrame) for (const b of edit.beatsOut) if (b.down && b.t > 0.2) add('beatFrame', b.t, 0.4, 0, { v: b.v });
   if (S.lowerThird) add('lowerThird', 0.8, 4.7, 4, { text: S.lowerThird }, 'lowerThird');
-  if (S.ctaText) add('cta', edit.duration - 2.4, 2.4, 4, { text: S.ctaText }, 'cta');
+  if (S.ctaText) add('cta', ctaStart, ctaDur, 4, { text: S.ctaText }, 'cta');
   clips.sort((a, b) => a.track - b.track || a.start - b.start);
   edit.mg = clips;
   return clips;
@@ -1625,6 +1662,7 @@ function mgFont(L, px, italic) { return `${italic ? 'italic ' : ''}${L.weight} $
 const MG_TEMPLATES = {
   title(ctx, c, lt, e) {
     const { W, H, k, L } = e, P = c.props, look = P.look, dur = c.dur;
+    if (look === 'tech') { drawTechTitle(ctx, c, lt, e); return; }
     const upper = look !== 'cinema' && look !== 'minimal';
     const text = upper ? P.text.toLocaleUpperCase() : P.text;
     const px = { stack: 92, cinema: 74, sport: 120, product: 72, clean: 64, minimal: 50 }[look] * k;
@@ -1682,6 +1720,7 @@ const MG_TEMPLATES = {
   },
   slam(ctx, c, lt, e) {
     const { W, H, k, L, style } = e, P = c.props; const px = (P.num ? 220 : 150) * k;
+    if (L.slamLook === 'tech') { drawTechSlam(ctx, c, lt, e); return; }
     const txt = P.text.toLocaleUpperCase(); const pIn = clamp(lt / 0.16, 0, 1), out = clamp((c.dur - lt) / 0.22, 0, 1);
     const s = lerp(2.3, 1, easeOutCubic(pIn)) * lerp(1.12, 1, out);
     ctx.save(); ctx.font = mgFont(L, px, style === 'sports'); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -1705,7 +1744,7 @@ const MG_TEMPLATES = {
   callout(ctx, c, lt, e) {
     const { W, H, k, L, v } = e, P = c.props; if (!v.M) return;
     const live = interestAt(v.srcT); const conf = interestConfidence(v.srcT);
-    const follow = P.kind === 'track' ? 1 : 0.6;
+    const follow = P.kind === 'track' || P.kind === 'bracket' ? 1 : 0.6;
     const ax = conf > 0.3 ? lerp(P.ax, live.x, follow) : P.ax, ay = conf > 0.3 ? lerp(P.ay, live.y, follow) : P.ay;
     const [sx, sy] = invM(v.M, ax, ay); if (sx < 0.06 || sx > 0.94 || sy < 0.08 || sy > 0.9) return;
     const x = sx * W, y = sy * H, out = clamp((c.dur - lt) / 0.25, 0, 1), R = 150 * k;
@@ -1721,6 +1760,14 @@ const MG_TEMPLATES = {
         const a2 = Math.atan2(ey - y1, ex - x1); ctx.fillStyle = L.accent2; ctx.beginPath(); ctx.moveTo(ex + Math.cos(a2) * 26 * k, ey + Math.sin(a2) * 26 * k);
         ctx.lineTo(ex + Math.cos(a2 + 2.5) * 30 * k, ey + Math.sin(a2 + 2.5) * 30 * k); ctx.lineTo(ex + Math.cos(a2 - 2.5) * 30 * k, ey + Math.sin(a2 - 2.5) * 30 * k); ctx.fill();
       }
+    } else if (P.kind === 'bracket') {
+      // targeting brackets that snap shut on the subject, with a crosshair and a scanning tick
+      const d = easeOutBack(clamp(lt / 0.22, 0, 1), 1.6), b = R * lerp(1.9, 1, d), l = b * 0.34;
+      ctx.strokeStyle = L.accent; ctx.lineWidth = 7 * k; ctx.lineCap = 'square'; ctx.beginPath();
+      for (const [dx, dy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { ctx.moveTo(x + dx * b, y + dy * (b - l)); ctx.lineTo(x + dx * b, y + dy * b); ctx.lineTo(x + dx * (b - l), y + dy * b); }
+      ctx.stroke(); ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 3 * k; const ch = 22 * k * d;
+      ctx.beginPath(); ctx.moveTo(x - ch, y); ctx.lineTo(x + ch, y); ctx.moveTo(x, y - ch); ctx.lineTo(x, y + ch); ctx.stroke();
+      const sy2 = y - b + 2 * b * ((lt * 1.6) % 1); ctx.fillStyle = 'rgba(255,31,61,.35)'; ctx.fillRect(x - b, sy2 - 2 * k, 2 * b, 4 * k);
     } else if (P.kind === 'track') {
       const d = easeOutCubic(lt / 0.25), r = R * lerp(1.6, 1, d); ctx.strokeStyle = L.accent; ctx.lineWidth = 6 * k;
       ctx.setLineDash([22 * k, 14 * k]); ctx.lineDashOffset = -lt * 120 * k; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
@@ -1766,6 +1813,87 @@ const MG_TEMPLATES = {
   cta(ctx, c, lt, e) { drawCta(ctx, c.props.text, lt, e.W, e.H, e.L); },
 };
 
+/* ---------- Tech Promo look: oversized red/white kinetic type ---------- */
+// Draw `str` one character at a time (so each letter can be animated). charFn(i) returns {dy, a} for letter i.
+function fillChars(ctx, str, x, y, charFn) {
+  let cx = x;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i], cw = ctx.measureText(ch).width, f = charFn(i);
+    if (f.a > 0.01 && ch !== ' ') { ctx.globalAlpha = f.a; ctx.fillText(ch, cx, y + f.dy); }
+    cx += cw;
+  }
+}
+function scanlines(ctx, x, y, w, h, k, a) { ctx.fillStyle = `rgba(0,0,0,${a})`; for (let yy = y; yy < y + h; yy += 6 * k) ctx.fillRect(x, yy, w, 2 * k); }
+function drawTechTitle(ctx, c, lt, e) {
+  const { W, H, k, L } = e, dur = c.dur, text = c.props.text.toLocaleUpperCase();
+  const out = clamp((dur - lt) / 0.3, 0, 1), pe = easeInCubic(1 - out);
+  ctx.save();
+  // darken the footage under the card so the type reads, keep it visible behind
+  ctx.fillStyle = `rgba(0,0,0,${0.62 * smoothstep(lt / 0.12) * out})`; ctx.fillRect(0, 0, W, H);
+  // each line is scaled to fill the frame width: oversized, edge-to-edge headline
+  const base = 170 * k; ctx.font = mgFont(L, base); ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  const words = text.split(/\s+/).filter(Boolean).map((w, i) => ({ txt: w, w: ctx.measureText(w).width, i }));
+  const lines = layoutWords(ctx, words, W * 0.88, ctx.measureText(' ').width).map((ln) => ({ str: ln.words.map((w) => w.txt).join(' '), s: Math.min(1.7, (W * 0.88) / ln.w) }));
+  let total = lines.reduce((a, ln) => a + base * ln.s * 0.98, 0); const fitAll = Math.min(1, (H * 0.62) / total); total *= fitAll;
+  const sh = lt < 0.3 ? (1 - lt / 0.3) * 14 * k : 0; ctx.translate(noise1(lt * 43) * sh, noise1(lt * 39 + 5) * sh);
+  const ca = lt < 0.25 ? (1 - lt / 0.25) * 16 * k : 0;
+  let y = H * c.props.bandY - total / 2;
+  lines.forEach((ln, li) => {
+    const s = ln.s * fitAll, lh = base * s * 0.98, cy = y + lh / 2; y += lh;
+    const red = lines.length > 1 && li % 2 === 1;
+    const dir = li % 2 ? 1 : -1, slide = dir * W * 1.1 * pe;
+    ctx.save(); ctx.beginPath(); ctx.rect(0, cy - lh / 2, W, lh); ctx.clip();
+    ctx.translate(W / 2 + slide, cy); ctx.scale(s, s);
+    const lw = ctx.measureText(ln.str).width, x0 = -lw / 2;
+    const charFn = (i) => { const p = clamp((lt - 0.05 - li * 0.08 - i * 0.022) / 0.22, 0, 1); return { dy: (1 - easeOutBack(p, 1.8)) * base * 1.05, a: out * (p > 0 ? 1 : 0) }; };
+    if (ca > 0) { // RGB split while the type lands
+      ctx.fillStyle = 'rgba(255,0,60,.75)'; fillChars(ctx, ln.str, x0 - ca / s, 0, charFn);
+      ctx.fillStyle = 'rgba(0,230,255,.6)'; fillChars(ctx, ln.str, x0 + ca / s, 0, charFn);
+    }
+    if (pe > 0) { ctx.fillStyle = red ? L.accent : '#fff'; const ghost = (i) => ({ dy: 0, a: 0.25 * out }); fillChars(ctx, ln.str, x0 - dir * 60 * k * pe / s, 0, ghost); }
+    ctx.fillStyle = red ? L.accent : '#fff'; fillChars(ctx, ln.str, x0, 0, charFn);
+    ctx.restore();
+  });
+  // red rule + short white rule under the headline
+  const rw = W * 0.62 * easeOutCubic((lt - 0.2) / 0.35) * out, ry = y + 26 * k;
+  ctx.globalAlpha = 1; ctx.fillStyle = L.accent; ctx.fillRect(W / 2 - rw / 2, ry, rw, 12 * k);
+  ctx.fillStyle = '#fff'; ctx.fillRect(W / 2 - rw / 2, ry + 22 * k, rw * 0.22, 6 * k);
+  // red light sweep across the card, then a white flash on the hit
+  const sw = (lt - 0.12) / 0.6;
+  if (sw > 0 && sw < 1) {
+    const x = lerp(-0.5, 1.5, easeInOutCubic(sw)) * W, gr = ctx.createLinearGradient(x - 220 * k, 0, x + 220 * k, 0);
+    gr.addColorStop(0, 'rgba(255,31,61,0)'); gr.addColorStop(0.5, 'rgba(255,31,61,0.35)'); gr.addColorStop(1, 'rgba(255,31,61,0)');
+    ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.translate(W / 2, H / 2); ctx.rotate(-0.3); ctx.translate(-W / 2, -H / 2); ctx.fillStyle = gr; ctx.fillRect(-W, -H, W * 3, H * 3); ctx.restore();
+  }
+  ctx.restore();
+  const fl = Math.max(0, 1 - lt / 0.1) * 0.85; if (fl > 0) { ctx.fillStyle = `rgba(255,255,255,${fl})`; ctx.fillRect(0, 0, W, H); }
+}
+function drawTechSlam(ctx, c, lt, e) {
+  const { W, H, k, L } = e, P = c.props, txt = P.text.toLocaleUpperCase();
+  const inv = hash1(c.start * 7.3) > 0.5; // alternate white-on-red and red-on-white
+  const pIn = clamp(lt / 0.14, 0, 1), pOut = clamp((lt - (c.dur - 0.18)) / 0.18, 0, 1);
+  const px = (P.num ? 300 : 260) * k; ctx.save(); ctx.font = mgFont(L, px); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  if ('letterSpacing' in ctx) ctx.letterSpacing = `${0.05 * easeOutCubic(lt / c.dur) * px}px`; // slow tracking expansion
+  const fit = Math.min(1, (W * 0.92) / ctx.measureText(txt).width), s = fit * lerp(1.55, 1, easeOutCubic(pIn));
+  const y = H * P.bandY, bh = px * fit * 1.08;
+  const sh = lt < 0.25 ? (1 - lt / 0.25) * 16 * k : 0; ctx.translate(noise1(lt * 45) * sh, noise1(lt * 41 + 2) * sh);
+  // band wipes in from the left and out to the right; letters are cropped by it while they are oversized
+  const x0 = W * easeInCubic(pOut), x1 = W * easeOutCubic(clamp(lt / 0.12, 0, 1));
+  if (x1 - x0 > 1) {
+    ctx.fillStyle = inv ? '#fff' : L.accent; ctx.fillRect(x0, y - bh / 2, x1 - x0, bh);
+    ctx.fillStyle = inv ? L.accent : '#fff'; ctx.fillRect(x0, y + bh / 2 + 8 * k, (x1 - x0) * 0.35, 8 * k);
+    ctx.save(); ctx.beginPath(); ctx.rect(x0, y - bh / 2, x1 - x0, bh); ctx.clip();
+    ctx.translate(W / 2, y + px * fit * 0.04); ctx.scale(s, s);
+    const ca = (1 - pIn) * 20 * k / s;
+    if (ca > 0) { ctx.fillStyle = 'rgba(255,0,60,.7)'; ctx.fillText(txt, -ca, 0); ctx.fillStyle = 'rgba(0,230,255,.55)'; ctx.fillText(txt, ca, 0); }
+    ctx.fillStyle = inv ? L.accent : '#fff'; ctx.fillText(txt, 0, 0); ctx.restore();
+    scanlines(ctx, x0, y - bh / 2, x1 - x0, bh, k, 0.08);
+  }
+  ctx.restore();
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+  const fl = Math.max(0, 1 - lt / 0.07) * 0.7; if (fl > 0) { ctx.fillStyle = `rgba(255,255,255,${fl})`; ctx.fillRect(0, 0, W, H); }
+}
+
 const USER_TEXT_CLIP = (c) => c.tpl === 'lowerThird' || c.tpl === 'cta' || (c.tpl === 'title' && !c.props.fromSpeech);
 function drawComposition(ctx, edit, t, W, H, v) {
   if (!edit.mg) return;
@@ -1780,7 +1908,12 @@ function drawComposition(ctx, edit, t, W, H, v) {
     ctx.restore();
   }
 }
-function slamActive(edit, t) { return !!(edit.mg && state.settings.fx.graphics && edit.mg.some((c) => c.enabled && (c.tpl === 'slam' || (c.tpl === 'title' && c.props.fromSpeech)) && t >= c.start && t < c.start + c.dur)); }
+function slamActive(edit, t) {
+  if (!edit.mg) return false; const L = MG_LOOKS[state.settings.style] || MG_LOOKS.viral;
+  // the full-width tech call to action is the closing message: captions step aside for it
+  if (L.cta && edit.mg.some((c) => c.enabled && c.tpl === 'cta' && t >= c.start && t < c.start + c.dur)) return true;
+  return !!(state.settings.fx.graphics && edit.mg.some((c) => c.enabled && (c.tpl === 'slam' || (c.tpl === 'title' && c.props.fromSpeech)) && t >= c.start && t < c.start + c.dur));
+}
 
 function drawOverlays(ctx, edit, t, W, H, v) {
   const S = state.settings, st = STYLES[S.style], k = W / 1080;
@@ -1798,11 +1931,12 @@ function drawOverlays(ctx, edit, t, W, H, v) {
     ctx.stroke(); ctx.shadowBlur = 0; ctx.globalAlpha = 1;
   }
   // light sweep (product)
-  if (gfx.includes('sweep')) for (const ev of [...edit.transitions.filter((x) => x.enabled), ...edit.zooms.filter((z) => z.enabled).map((z) => ({ t: z.t + z.attack }))]) {
+  const sweepCol = gfx.includes('redsweep') ? '255,31,61' : '255,255,255';
+  if (gfx.includes('sweep') || gfx.includes('redsweep')) for (const ev of [...edit.transitions.filter((x) => x.enabled), ...edit.zooms.filter((z) => z.enabled).map((z) => ({ t: z.t + z.attack }))]) {
     const l = (t - ev.t) / 0.7; if (l < 0 || l > 1) continue;
     const x = lerp(-0.4, 1.4, easeInOutCubic(l)) * W;
     const gr = ctx.createLinearGradient(x - 160 * k, 0, x + 160 * k, 0);
-    gr.addColorStop(0, 'rgba(255,255,255,0)'); gr.addColorStop(0.5, 'rgba(255,255,255,0.28)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    gr.addColorStop(0, `rgba(${sweepCol},0)`); gr.addColorStop(0.5, `rgba(${sweepCol},0.28)`); gr.addColorStop(1, `rgba(${sweepCol},0)`);
     ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.translate(W / 2, H / 2); ctx.rotate(-0.35); ctx.translate(-W / 2, -H / 2);
     ctx.fillStyle = gr; ctx.fillRect(-W, -H, W * 3, H * 3); ctx.restore();
   }
@@ -1813,6 +1947,13 @@ function drawOverlays(ctx, edit, t, W, H, v) {
     ctx.beginPath();
     for (let i = 0; i < 36; i++) { const a = hash1(seed * 31 + i) * Math.PI * 2; const r0 = R * (0.55 + 0.2 * hash1(i + seed)); ctx.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0); ctx.lineTo(cx + Math.cos(a) * R * 1.1, cy + Math.sin(a) * R * 1.1); }
     ctx.stroke(); ctx.restore();
+  }
+  // digital scan lines with one slow bright scan band (tech)
+  if (gfx.includes('scanlines')) {
+    scanlines(ctx, 0, 0, W, H, k, 0.06);
+    const by = ((t * 0.18) % 1.2 - 0.1) * H, gr = ctx.createLinearGradient(0, by - 60 * k, 0, by + 60 * k);
+    gr.addColorStop(0, 'rgba(255,255,255,0)'); gr.addColorStop(0.5, 'rgba(255,255,255,0.05)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = gr; ctx.fillRect(0, by - 60 * k, W, 120 * k);
   }
   if (S.letterbox) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H * 0.07); ctx.fillRect(0, H * 0.93, W, H * 0.07); }
   // motion-graphics composition (titles, kinetic keywords, callouts, tags, frames, lower third, CTA)
@@ -1835,7 +1976,7 @@ function layoutWords(ctx, words, maxW, spaceW) {
 
 function drawCaption(ctx, g, t, W, H) {
   const c = state.settings.cap, k = W / 1080, style = c.style;
-  const base = { viral: 78, cinematic: 58, podcast: 60, sports: 96, minimal: 50 }[style] || 70;
+  const base = { viral: 78, cinematic: 58, podcast: 60, sports: 96, minimal: 50, tech: 88 }[style] || 70;
   const px = base * (c.size / 100) * k;
   const fam = c.font; let weight = FONT_W[fam] || 800; if (style === 'minimal' && fam === 'Inter') weight = 600;
   const italic = style === 'cinematic' && fam === 'Playfair Display' ? 'italic ' : '';
@@ -1843,7 +1984,7 @@ function drawCaption(ctx, g, t, W, H) {
   if ('letterSpacing' in ctx) ctx.letterSpacing = style === 'cinematic' ? `${0.03 * px}px` : '0px';
   ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
   const words = g.words.map((w) => { const txt = c.upper ? w.text.toLocaleUpperCase() : w.text; return { ...w, txt, w: ctx.measureText(txt).width }; });
-  const spaceW = ctx.measureText(' ').width * (style === 'podcast' ? 1.2 : 1) + (style === 'viral' || style === 'sports' ? px * 0.14 : 0);
+  const spaceW = ctx.measureText(' ').width * (style === 'podcast' ? 1.2 : 1) + (style === 'viral' || style === 'sports' || style === 'tech' ? px * 0.14 : 0);
   const lines = layoutWords(ctx, words, W * 0.84, spaceW);
   const lh = px * (style === 'podcast' ? 1.35 : 1.18);
   const cy = H * c.pos / 100; const y0 = cy - (lines.length - 1) * lh / 2;
@@ -1852,6 +1993,7 @@ function drawCaption(ctx, g, t, W, H) {
   let alpha = 1, gscale = 1, dy = 0;
   if (style === 'viral') gscale = 0.65 + 0.35 * easeOutBack(pIn, 2.2);
   else if (style === 'sports') { gscale = 1 + 0.5 * (1 - easeOutCubic(pIn)); alpha = clamp(pIn * 2, 0, 1); }
+  else if (style === 'tech') { gscale = 1 + 0.3 * (1 - easeOutCubic(pIn)); alpha = clamp(pIn * 2.5, 0, 1) * clamp(pOut * 2, 0, 1); }
   else if (style === 'cinematic') { alpha = smoothstep(pIn) * smoothstep(pOut * 1.4); dy = (1 - easeOutCubic(pIn)) * 18 * k; }
   else if (style === 'minimal') alpha = smoothstep(pIn) * smoothstep(pOut * 1.5);
   else if (style === 'podcast') alpha = smoothstep(pIn * 1.5);
@@ -1868,12 +2010,17 @@ function drawCaption(ctx, g, t, W, H) {
       if (style === 'viral') { if (active) { col = c.hl; ws = 1.12; } else if (hl) col = c.hl; }
       if (style === 'sports') { if (hl || active) col = c.hl; if (active && hl) { jx = noise1(t * 40) * 4 * k; jy = noise1(t * 37 + 3) * 4 * k; } }
       if (style === 'cinematic' || style === 'minimal') { if (hl) col = c.hl; }
+      if (style === 'tech' && hl) col = c.hl;
       ctx.save();
       const cxw = x + w.w / 2; ctx.translate(cxw + jx, y + jy); ctx.scale(ws, ws); ctx.translate(-cxw, -y);
       if (style === 'podcast') {
         if (active) { ctx.fillStyle = c.hl; roundRect(ctx, x - px * 0.18, y - px * 0.62, w.w + px * 0.36, px * 1.24, px * 0.25); ctx.fill(); col = '#0b0b10'; }
         else { ctx.globalAlpha = alpha * (spoken ? 1 : 0.55); if (hl) col = c.hl; }
         ctx.lineWidth = px * 0.14; ctx.strokeStyle = c.stroke; if (!active) ctx.strokeText(w.txt, x, y);
+      } else if (style === 'tech') {
+        // the spoken word sits on a red block that wipes in under it
+        if (active) { const wp = easeOutCubic((t - w.s) / 0.12); ctx.fillStyle = c.hl; ctx.fillRect(x - px * 0.14, y - px * 0.6, (w.w + px * 0.28) * wp, px * 1.2); col = '#ffffff'; }
+        else { ctx.lineWidth = px * 0.12; ctx.strokeStyle = c.stroke; ctx.strokeText(w.txt, x, y); }
       } else if (style === 'viral' || style === 'sports') {
         ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = px * 0.22; ctx.shadowOffsetY = px * 0.06;
         ctx.lineWidth = px * (style === 'sports' ? 0.2 : 0.17); ctx.strokeStyle = c.stroke; ctx.strokeText(w.txt, x, y);
@@ -1900,6 +2047,7 @@ function drawLowerThird(ctx, text, l, W, H, L) {
   ctx.restore();
 }
 function drawCta(ctx, text, l, W, H, L) {
+  if (L && L.cta) { drawTechCta(ctx, text, l, W, H, L); return; }
   const k = W / 1080, px = 52 * k; const p = easeOutBack(clamp(l / 0.35, 0, 1), 2);
   ctx.save(); ctx.font = `900 ${px}px "Montserrat", Inter, sans-serif`; ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
   const tw = ctx.measureText(text).width; const y = H * 0.86;
@@ -1907,6 +2055,24 @@ function drawCta(ctx, text, l, W, H, L) {
   const gr = ctx.createLinearGradient(-tw / 2, 0, tw / 2, 0); gr.addColorStop(0, (L && L.accent) || '#ff3d6e'); gr.addColorStop(1, (L && L.accent2 && L.accent2 !== '#ffffff' ? L.accent2 : '#7c5cff'));
   ctx.fillStyle = gr; roundRect(ctx, -tw / 2 - px * 0.7, -px * 0.85, tw + px * 1.4, px * 1.7, px * 0.85); ctx.fill();
   ctx.fillStyle = '#fff'; ctx.fillText(text, 0, 0); ctx.restore();
+}
+
+// Big glowing yellow-green call to action that glitches in and holds to the last frame.
+function drawTechCta(ctx, text, l, W, H, L) {
+  const k = W / 1080, txt = text.toLocaleUpperCase(), px = 130 * k;
+  ctx.save(); ctx.font = `400 ${px}px "Anton", Inter, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const fit = Math.min(1, (W * 0.86) / ctx.measureText(txt).width); const p = easeOutBack(clamp(l / 0.3, 0, 1), 1.8);
+  const y = H * 0.8, s = fit * lerp(1.4, 1, p);
+  const bg = ctx.createLinearGradient(0, y - 260 * k, 0, H); bg.addColorStop(0, 'rgba(0,0,0,0)'); bg.addColorStop(0.45, 'rgba(0,0,0,0.7)'); bg.addColorStop(1, 'rgba(0,0,0,0.85)');
+  ctx.globalAlpha = smoothstep(l / 0.2); ctx.fillStyle = bg; ctx.fillRect(0, y - 260 * k, W, H - y + 260 * k);
+  ctx.translate(W / 2, y); ctx.scale(s, s);
+  const g = l < 0.35 ? 1 - l / 0.35 : 0; // glitch-in: sliced offset + RGB split
+  if (g > 0) { ctx.globalAlpha = 0.7 * g; ctx.fillStyle = '#ff1f3d'; ctx.fillText(txt, -14 * k * g, 0); ctx.fillStyle = '#00e6ff'; ctx.fillText(txt, 14 * k * g, 0); }
+  ctx.globalAlpha = clamp(l / 0.08, 0, 1); ctx.shadowColor = L.cta; ctx.shadowBlur = 36 * k; ctx.fillStyle = L.cta;
+  ctx.fillText(txt, noise1(l * 50) * 18 * k * g, 0); ctx.shadowBlur = 0; ctx.fillText(txt, noise1(l * 50) * 18 * k * g, 0);
+  const tw = ctx.measureText(txt).width, rw = tw * easeOutCubic((l - 0.15) / 0.4);
+  ctx.fillStyle = L.cta; ctx.fillRect(-rw / 2, px * 0.62, rw, 8 * k); ctx.fillStyle = L.accent; ctx.fillRect(-rw / 2, px * 0.62 + 16 * k, rw * 0.25, 6 * k);
+  ctx.restore();
 }
 
 /* ============================== 9. PREVIEW PLAYER ============================== */
@@ -2561,7 +2727,7 @@ function buildStatusTable() {
     ['ok', 'Music + beat sync + ducking', 'Your file only. Tempo/beat tracking by onset autocorrelation; cuts, zooms and pulses snap to beats; music dips under speech.'],
     ['ok', 'Sound effects', 'Whoosh, impact, riser, bass hit — synthesised in the browser (no copyrighted samples).'],
     ['ok', 'Animated subtitles (5 styles) and titles', 'Rendered into the video frames; fully editable.'],
-    ['ok', 'Motion graphics composition', 'Per-preset templates drawn into every exported frame: animated title cards (stacked, cinematic, sports, product, clean, minimal), kinetic keywords, subject callouts (ring + arrow, tracking reticle, labelled pointer), slow-motion tag, beat-frame pulses, cinema bars, lower third, call to action. Text only comes from your hook text or real subtitles; callouts only appear where a subject was detected.'],
+    ['ok', 'Motion graphics composition', 'Per-preset templates drawn into every exported frame: animated title cards (stacked, cinematic, sports, product, tech, clean, minimal), kinetic keywords, subject callouts (ring + arrow, tracking reticle, targeting brackets, labelled pointer), slow-motion tag, beat-frame pulses, cinema bars, lower third, call to action. Text only comes from your hook text or real subtitles; callouts only appear where a subject was detected.'],
     ['ok', 'Directional wipe transition', 'Two-layer GPU wipe with a glowing edge, between real shots of your video.'],
     ['ext', 'HyperFrames', 'Used as the design model (timed, seekable composition clips). Its MP4 renderer needs Node.js + headless Chrome + FFmpeg on a server, which GitHub Pages and iPhone Safari cannot run — so the same model is rendered natively in the browser instead.'],
     ['exp', 'On-device speech recognition', 'Real ML model (OpenAI Whisper via transformers.js). Downloads 40–80 MB on first use; slow on long videos; needs a modern browser. Words in silence are discarded to avoid invented text.'],

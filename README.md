@@ -23,6 +23,7 @@ Each preset applies its own set of motion-graphics templates on top of **your** 
 | Podcast | clean text with accent underline | lower third, karaoke captions, jump-cut reframing | hard cuts |
 | Sports / MMA | slanted stripes, slam-in with shake | tracking reticle on the subject, kinetic keywords, SLOW-MO tag on speed ramps, speed lines | whip, wipe, flash, glitch, zoom blast |
 | Product Ad | white card with drawn underline | labelled pointer callouts, light sweeps | soft flash, wipe, zoom blast |
+| Tech Promo | full-screen headline: each line fills the frame width, letters rise in one by one with RGB split, white flash, red rule and red light sweep | oversized keywords on a red or white band (cropped while they land, tracking expands), targeting brackets on the subject, scan lines, yellow-green glowing call to action | glitch (with a glitch sound), white or red flash, whip, zoom blast, wipe |
 | Clean & Minimal | small fading text | none (on purpose) | hard cuts |
 | Beat Montage | stacked (Bebas) | beat-frame pulse on every downbeat | crossfade, wipe, flash, zoom blast, whip, dip, all on the beat |
 
@@ -31,6 +32,7 @@ Rules that keep it from looking random:
 * Callouts only appear where a subject was actually detected (skin tone or motion heuristics).
 * Titles and keywords move to a different band of the frame when the subject is in the way.
 * Captions hide while a title or keyword repeats the same words.
+* Tech Promo puts a sound on every graphic: a bass hit on the title card, an impact on each keyword, a riser into the call to action and a glitch sound on glitch cuts.
 
 Every graphic is listed under **Adjust → Effects**, where you can switch each one off and preview it.
 
