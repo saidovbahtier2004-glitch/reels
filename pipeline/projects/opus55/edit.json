@@ -1,0 +1,19 @@
+{
+  "source": "../../../input/reference.mp4",
+  "width": 2160,
+  "height": 3840,
+  "crf": 16,
+  "preset": "medium",
+  "codec": "h264",
+  "lufs": -14,
+  "accent": [255, 45, 45],
+  "caption_size": 0.082,
+  "max_zoom": 1.16,
+  "shutter_deg": 180,
+  "grade_strength": 1.0,
+  "look": {"target_luma": 0.2, "contrast": 0.32, "saturation": 1.12, "red_boost": 0.22, "split_tone": 0.025, "vignette": 0.28},
+  "title": {"text": "NEW CLAUDE OPUS 5.5", "start": 0.12, "duration": 2.4, "band": "upper"},
+  "captions": {"path": "captions.json", "snap_to_audio": true},
+  "music": null,
+  "progress_bar": true
+}

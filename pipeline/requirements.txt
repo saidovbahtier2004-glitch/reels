@@ -1,0 +1,5 @@
+numpy>=1.24
+pillow>=10.0
+# optional: on-screen text (OCR) analysis for automatic captions/title
+rapidocr-onnxruntime>=1.3
+wordsegment>=1.3
