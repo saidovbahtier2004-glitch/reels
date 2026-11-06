@@ -1,0 +1,59 @@
+{
+ "duration": 43.045,
+ "lines": [
+  {
+   "key": "intro",
+   "start": 0.6,
+   "end": 4.973,
+   "text": "Once upon a time, in a sunny forest, there lived a little fox named Finn."
+  },
+  {
+   "key": "play",
+   "start": 5.673,
+   "end": 9.321,
+   "text": "Every day, Finn played with his very best friend... his shadow!"
+  },
+  {
+   "key": "cloud",
+   "start": 10.021,
+   "end": 13.989,
+   "text": "But one cloudy morning, Finn looked down... and his shadow was gone!"
+  },
+  {
+   "key": "search",
+   "start": 14.689,
+   "end": 19.319,
+   "text": "He searched everywhere. Under the rocks. Behind the trees. Even in the river."
+  },
+  {
+   "key": "cry",
+   "start": 20.019,
+   "end": 21.555,
+   "text": "Shadow? Where are you?"
+  },
+  {
+   "key": "owl",
+   "start": 22.255,
+   "end": 27.332,
+   "text": "Your shadow never left you, little one. It is just waiting for the light."
+  },
+  {
+   "key": "wait",
+   "start": 28.032,
+   "end": 31.829,
+   "text": "So Finn waited, and waited... until the clouds drifted away."
+  },
+  {
+   "key": "back",
+   "start": 32.529,
+   "end": 35.921,
+   "text": "And there it was! His shadow, dancing right beside him."
+  },
+  {
+   "key": "moral",
+   "start": 36.621,
+   "end": 40.845,
+   "text": "Remember: on cloudy days, the ones who love you are never really gone."
+  }
+ ]
+}
