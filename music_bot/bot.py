@@ -23,12 +23,14 @@ import os
 import re
 import tempfile
 import urllib.parse
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import aiohttp
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatAction, ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     BufferedInputFile,
@@ -60,6 +62,10 @@ last_query: dict[int, str] = {}
 # O'z kutubxonangiz (maxfiy Telegram kanal)
 # --------------------------------------------------------------------------- #
 INDEX_NAME = "library.json"
+INDEX_CAPTION = "📚 Kutubxona indeksi — o'chirmang"
+INDEX_VERSION = 2
+TZ = timezone(timedelta(hours=5))  # Toshkent vaqti
+SAVE_DELAY = 3.0  # bir nechta audio birdan tashlansa, indeks bir marta yoziladi
 
 
 def norm(text: str) -> str:
@@ -68,17 +74,56 @@ def norm(text: str) -> str:
     return re.sub(r"[^\w]+", " ", text).strip()
 
 
+def now_iso() -> str:
+    return datetime.now(TZ).isoformat(timespec="seconds")
+
+
+def fmt_size(size: int | None) -> str:
+    if not size:
+        return "—"
+    if size >= 1024 * 1024:
+        return f"{size / 1024 / 1024:.1f} MB"
+    return f"{size / 1024:.0f} KB"
+
+
+def parse_audio_meta(audio) -> tuple[str, str]:
+    """Audio teglaridan yoki fayl nomidan (Ijrochi - Nomi.mp3) nom va ijrochini oladi."""
+    title = (getattr(audio, "title", None) or "").strip()
+    artist = (getattr(audio, "performer", None) or "").strip()
+    if not title:
+        stem = Path(getattr(audio, "file_name", None) or "Nomsiz").stem.replace("_", " ").strip()
+        if " - " in stem:
+            left, right = (s.strip() for s in stem.split(" - ", 1))
+            if artist:
+                title = right or left
+            else:
+                artist, title = left, right
+        else:
+            title = stem
+    return title or "Nomsiz", artist
+
+
 class Library:
-    """Kanaldagi audiolar ro'yxati. Indeks kanalda pin qilingan library.json
-    faylida saqlanadi, shuning uchun server qayta ishga tushsa ham yo'qolmaydi."""
+    """Kanaldagi audiolar bazasi.
+
+    Har bir yozuv: id, title, artist, file_id, file_unique_id, duration,
+    file_size, date_added, source_channel, msg_id (+ deleted, key).
+    Baza kanalda pin qilingan library.json faylida saqlanadi, shuning uchun
+    server qayta ishga tushsa ham yo'qolmaydi. Audiolar serverga yuklanmaydi —
+    foydalanuvchiga Telegram file_id orqali yuboriladi.
+    """
 
     def __init__(self) -> None:
         self.channel = os.getenv("LIBRARY_CHANNEL_ID", "").strip()
         self.chat_id: int | None = None
         self.index_msg_id: int | None = None
         self.items: list[dict] = []
+        self.by_uid: dict[str, dict] = {}
         self.lock = asyncio.Lock()
+        self._dirty = False
+        self._save_task: asyncio.Task | None = None
 
+    # ---- yuklash / saqlash ----
     async def load(self, bot: Bot) -> None:
         if not self.channel:
             log.info("LIBRARY_CHANNEL_ID berilmagan — kutubxona o'chiq")
@@ -90,73 +135,206 @@ class Library:
             pm = chat.pinned_message
             if pm and pm.document and pm.document.file_name == INDEX_NAME:
                 buf = await bot.download(pm.document.file_id)
-                self.items = json.loads(buf.read().decode()).get("items", [])
+                self.load_data(json.loads(buf.read().decode()))
                 self.index_msg_id = pm.message_id
             log.info("Kutubxona yuklandi: %s ta qo'shiq", len(self.active()))
         except Exception:
             log.exception("Kutubxona kanalini o'qib bo'lmadi (bot kanalda admin ekanini tekshiring)")
 
-    def active(self) -> list[dict]:
-        return [it for it in self.items if not it.get("deleted")]
+    def load_data(self, data: dict) -> None:
+        """JSON'dan yuklaydi va eski (v1) yozuvlarni yangi formatga o'tkazadi."""
+        self.items = []
+        for i, raw in enumerate(data.get("items", [])):
+            it = dict(raw)
+            it["id"] = i + 1  # id = ro'yxatdagi o'rni, o'chirilganlar ham joyida qoladi
+            it.setdefault("file_unique_id", it.pop("uid", ""))
+            it.setdefault("artist", it.pop("performer", ""))
+            it.setdefault("msg_id", it.pop("msg", None))
+            it.setdefault("title", "Nomsiz")
+            it.setdefault("duration", 0)
+            it.setdefault("file_size", 0)
+            it.setdefault("date_added", "")
+            it.setdefault("source_channel", self.chat_id)
+            it["key"] = norm(f"{it['artist']} {it['title']} {it.get('file_name', '')}")
+            self.items.append(it)
+        self._reindex()
 
-    def search(self, query: str) -> list[tuple[int, dict]]:
-        words = norm(query).split()
-        if not words:
-            return []
-        return [(i, it) for i, it in enumerate(self.items)
-                if not it.get("deleted") and all(w in it["key"] for w in words)]
+    def _reindex(self) -> None:
+        self.by_uid = {it["file_unique_id"]: it for it in self.items
+                       if not it.get("deleted") and it.get("file_unique_id")}
 
-    async def save(self, bot: Bot) -> None:
-        data = json.dumps({"items": self.items}, ensure_ascii=False).encode()
-        doc = BufferedInputFile(data, INDEX_NAME)
+    def dump(self) -> bytes:
+        items = [{k: v for k, v in it.items() if k != "key"} for it in self.items]
+        return json.dumps({"version": INDEX_VERSION, "items": items}, ensure_ascii=False).encode()
+
+    async def _write(self, bot: Bot) -> None:
+        doc = BufferedInputFile(self.dump(), INDEX_NAME)
         if self.index_msg_id:
             try:
                 await bot.edit_message_media(
                     chat_id=self.chat_id, message_id=self.index_msg_id,
-                    media=InputMediaDocument(media=doc, caption="📚 Kutubxona indeksi — o'chirmang"),
+                    media=InputMediaDocument(media=doc, caption=INDEX_CAPTION),
                 )
                 return
             except Exception:
                 log.exception("Indeksni yangilab bo'lmadi, yangisini yaratamiz")
-        msg = await bot.send_document(
-            self.chat_id, doc, caption="📚 Kutubxona indeksi — o'chirmang", disable_notification=True,
-        )
+                doc = BufferedInputFile(self.dump(), INDEX_NAME)
+        msg = await bot.send_document(self.chat_id, doc, caption=INDEX_CAPTION, disable_notification=True)
         self.index_msg_id = msg.message_id
         await bot.pin_chat_message(self.chat_id, msg.message_id, disable_notification=True)
 
-    async def add(self, bot: Bot, message: Message) -> dict | None:
-        audio = message.audio or message.document
-        title = getattr(audio, "title", None) or ""
-        performer = getattr(audio, "performer", None) or ""
-        if not title:
-            stem = Path(audio.file_name or "Nomsiz").stem
-            if " - " in stem and not performer:
-                performer, title = (s.strip() for s in stem.split(" - ", 1))
-            else:
-                title = stem
+    def schedule_save(self, bot: Bot) -> None:
+        self._dirty = True
+        if self._save_task is None or self._save_task.done():
+            self._save_task = asyncio.create_task(self._delayed_save(bot))
+
+    async def _delayed_save(self, bot: Bot) -> None:
+        await asyncio.sleep(SAVE_DELAY)
+        await self.flush(bot)
+
+    async def flush(self, bot: Bot) -> None:
         async with self.lock:
-            if any(it["uid"] == audio.file_unique_id and not it.get("deleted") for it in self.items):
+            if not self._dirty:
+                return
+            self._dirty = False
+            try:
+                await self._write(bot)
+                log.info("Indeks saqlandi (%s ta qo'shiq)", len(self.active()))
+            except Exception:
+                self._dirty = True
+                log.exception("Indeksni saqlab bo'lmadi")
+
+    # ---- o'qish ----
+    def active(self) -> list[dict]:
+        return [it for it in self.items if not it.get("deleted")]
+
+    def get(self, item_id: int) -> dict | None:
+        if 1 <= item_id <= len(self.items) and not self.items[item_id - 1].get("deleted"):
+            return self.items[item_id - 1]
+        return None
+
+    def search(self, query: str) -> list[dict]:
+        """Barcha so'zlar mos kelganlar; aniqroq moslar oldinda."""
+        q = norm(query)
+        words = q.split()
+        if not words:
+            return []
+        scored = []
+        for it in self.items:
+            if it.get("deleted"):
+                continue
+            key = it["key"]
+            if not all(w in key for w in words):
+                continue
+            title = norm(it["title"])
+            full = norm(f"{it['artist']} {it['title']}")
+            if q in (title, full):
+                score = 0
+            elif title.startswith(q) or full.startswith(q) or norm(it["artist"]) == q:
+                score = 1
+            elif q in key:
+                score = 2
+            else:
+                score = 3
+            scored.append((score, it["id"], it))
+        scored.sort(key=lambda s: (s[0], s[1]))
+        return [s[2] for s in scored]
+
+    def added_on(self, day: date) -> list[dict]:
+        out = []
+        for it in self.active():
+            try:
+                if datetime.fromisoformat(it["date_added"]).astimezone(TZ).date() == day:
+                    out.append(it)
+            except (ValueError, TypeError):
+                pass
+        return out
+
+    def stats(self) -> dict:
+        act = self.active()
+        return {
+            "total": len(act),
+            "today": len(self.added_on(datetime.now(TZ).date())),
+            "deleted": len(self.items) - len(act),
+            "artists": len({norm(it["artist"]) for it in act if it["artist"]}),
+            "size": sum(it.get("file_size") or 0 for it in act),
+            "duration": sum(it.get("duration") or 0 for it in act),
+        }
+
+    def duplicates(self) -> list[list[dict]]:
+        """Bir xil ijrochi + nomli (lekin boshqa fayl) qo'shiqlar guruhlari."""
+        groups: dict[str, list[dict]] = {}
+        for it in self.active():
+            groups.setdefault(norm(f"{it['artist']} {it['title']}"), []).append(it)
+        return [g for g in groups.values() if len(g) > 1]
+
+    async def check(self, bot: Bot) -> dict:
+        """Bazani tekshiradi: maydonlar, takroriy file_unique_id va file_id'lar ishlashi."""
+        problems: list[str] = []
+        broken: list[dict] = []
+        seen: dict[str, int] = {}
+        for it in self.active():
+            for field in ("file_id", "file_unique_id", "title"):
+                if not it.get(field):
+                    problems.append(f"#{it['id']}: {field} yo'q")
+            uid = it.get("file_unique_id")
+            if uid in seen:
+                problems.append(f"#{it['id']}: #{seen[uid]} bilan bir xil fayl")
+            elif uid:
+                seen[uid] = it["id"]
+            try:
+                await bot.get_file(it["file_id"])
+            except TelegramBadRequest as e:
+                if "too big" not in str(e).lower():  # 20 MB dan kattalar uchun bu normal
+                    broken.append(it)
+                    log.warning("Ishlamaydigan file_id #%s: %s", it["id"], e)
+            except Exception:
+                log.exception("file_id tekshiruvida xato #%s", it["id"])
+            await asyncio.sleep(0.05)  # Telegram limitlariga urilmaslik uchun
+        return {"checked": len(self.active()), "problems": problems, "broken": broken,
+                "index_ok": bool(self.index_msg_id)}
+
+    # ---- yozish ----
+    async def add(self, bot: Bot, message: Message) -> dict | None:
+        """Kanal postidagi audioni bazaga qo'shadi. Takroriy bo'lsa None qaytaradi."""
+        audio = message.audio or message.document
+        title, artist = parse_audio_meta(audio)
+        async with self.lock:
+            if audio.file_unique_id in self.by_uid:
+                log.info("Takroriy audio o'tkazib yuborildi: %s — %s", artist, title)
                 return None
             item = {
-                "file_id": audio.file_id,
-                "uid": audio.file_unique_id,
+                "id": len(self.items) + 1,
                 "title": title,
-                "performer": performer,
+                "artist": artist,
+                "file_id": audio.file_id,
+                "file_unique_id": audio.file_unique_id,
                 "duration": getattr(audio, "duration", None) or 0,
-                "msg": message.message_id,
-                "key": norm(f"{performer} {title} {audio.file_name or ''}"),
+                "file_size": getattr(audio, "file_size", None) or 0,
+                "date_added": now_iso(),
+                "source_channel": message.chat.id,
+                "msg_id": message.message_id,
+                "file_name": getattr(audio, "file_name", None) or "",
             }
+            item["key"] = norm(f"{artist} {title} {item['file_name']}")
             self.items.append(item)
-            await self.save(bot)
-            return item
+            self.by_uid[item["file_unique_id"]] = item
+        log.info("Kutubxonaga qo'shildi #%s: %s — %s", item["id"], artist, title)
+        self.schedule_save(bot)
+        return item
+
+    async def remove(self, bot: Bot, item: dict) -> None:
+        async with self.lock:
+            item["deleted"] = True
+            self._reindex()
+        log.info("Kutubxonadan o'chirildi #%s: %s — %s", item["id"], item["artist"], item["title"])
+        self.schedule_save(bot)
 
     async def remove_by_msg(self, bot: Bot, msg_id: int) -> dict | None:
-        async with self.lock:
-            for it in self.items:
-                if it.get("msg") == msg_id and not it.get("deleted"):
-                    it["deleted"] = True
-                    await self.save(bot)
-                    return it
+        for it in self.items:
+            if it.get("msg_id") == msg_id and not it.get("deleted"):
+                await self.remove(bot, it)
+                return it
         return None
 
 
@@ -250,19 +428,25 @@ async def send_track(message: Message, track: dict, shazam_link: str | None = No
 
 
 async def show_results(message: Message, query: str, index: int = 0, edit: bool = False) -> None:
-    # 1-sahifada avval o'z kutubxonamizdagi to'liq qo'shiqlar chiqadi
-    lib_hits = library.search(query)[:PAGE_SIZE] if index == 0 else []
-    limit = PAGE_SIZE - len(lib_hits)
+    """Natijalar: avval o'z bazamizdagi to'liq qo'shiqlar (🎧), keyin Deezer.
+    index — umumiy ro'yxatdagi siljish (sahifalash uchun)."""
+    lib_hits = library.search(query)
+    lib_page = lib_hits[index:index + PAGE_SIZE]
+    limit = PAGE_SIZE - len(lib_page)
+    dz_index = max(0, index - len(lib_hits))
 
     tracks: list[dict] = []
-    total = 0
-    try:
-        tracks, total = await deezer_search(query, index=index, limit=max(limit, 1))
-        tracks = tracks[:limit]
-    except Exception:
-        log.exception("Deezer qidiruv xatosi")
+    dz_total = 0
+    if limit > 0:
+        try:
+            tracks, dz_total = await deezer_search(query, index=dz_index, limit=limit)
+            tracks = tracks[:limit]
+        except Exception:
+            log.exception("Deezer qidiruv xatosi")
+    else:
+        dz_total = 1  # keyingi sahifada Deezer natijalari bo'lishi mumkin
 
-    if not lib_hits and not tracks:
+    if not lib_page and not tracks:
         text = f"😕 «{esc(query)}» bo'yicha hech narsa topilmadi. Boshqacha yozib ko'ring."
         if edit:
             await message.edit_text(text)
@@ -272,14 +456,14 @@ async def show_results(message: Message, query: str, index: int = 0, edit: bool 
 
     lines = [f"🔍 <b>{esc(query)}</b>\n"]
     buttons = []
-    n = 0
-    for lib_idx, it in lib_hits:
+    n = index
+    for it in lib_page:
         n += 1
-        line = f"<b>{n}.</b> 🎧 {esc(it['performer'])} - {esc(it['title'])}"
+        line = f"<b>{n}.</b> 🎧 {esc(it['artist'])} - {esc(it['title'])}"
         if it.get("duration"):
             line += f"  <b>{fmt_duration(it['duration'])}</b>"
         lines.append(line)
-        buttons.append(InlineKeyboardButton(text=str(n), callback_data=f"l:{lib_idx}"))
+        buttons.append(InlineKeyboardButton(text=str(n), callback_data=f"l:{it['id']}"))
     for t in tracks:
         n += 1
         artist = (t.get("artist") or {}).get("name", "")
@@ -288,13 +472,13 @@ async def show_results(message: Message, query: str, index: int = 0, edit: bool 
             line += f"  <b>{fmt_duration(t['duration'])}</b>"
         lines.append(line)
         buttons.append(InlineKeyboardButton(text=str(n), callback_data=f"t:{t['id']}"))
-    if lib_hits:
+    if lib_page:
         lines.append("\n🎧 — to'liq qo'shiq")
 
     rows = [buttons[i:i + 5] for i in range(0, len(buttons), 5)]
-    next_index = index + len(tracks)
+    next_index = index + len(lib_page) + len(tracks)
     has_prev = index > 0
-    has_next = bool(tracks) and next_index < total
+    has_next = next_index < len(lib_hits) + dz_total and (bool(tracks) or limit == 0)
     rows.append([
         InlineKeyboardButton(text="⬅️", callback_data=f"p:{max(0, index - PAGE_SIZE)}" if has_prev else "noop"),
         InlineKeyboardButton(text="❌", callback_data="close"),
@@ -307,6 +491,16 @@ async def show_results(message: Message, query: str, index: int = 0, edit: bool 
         await message.edit_text(text, reply_markup=kb)
     else:
         await message.answer(text, reply_markup=kb)
+
+
+async def send_library_item(message: Message, it: dict) -> None:
+    """Bazadagi qo'shiqni serverga yuklamasdan, file_id orqali yuboradi."""
+    caption = f"🎵 <b>{esc(it['artist'])} — {esc(it['title'])}</b>"
+    try:
+        await message.answer_audio(it["file_id"], caption=caption)
+    except Exception:
+        log.exception("Kutubxona audiosini yuborib bo'lmadi #%s", it.get("id"))
+        await message.answer("❌ Qo'shiqni yuborib bo'lmadi.")
 
 
 async def run_ffmpeg(*args: str) -> bool:
@@ -474,18 +668,185 @@ async def on_track(cb: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("l:"))
 async def on_library_track(cb: CallbackQuery) -> None:
-    idx = int(cb.data[2:])
-    if idx >= len(library.items) or library.items[idx].get("deleted"):
+    it = library.get(int(cb.data[2:]))
+    if not it:
         await cb.answer("Bu qo'shiq o'chirilgan.", show_alert=True)
         return
     await cb.answer("⏳ Yuborilmoqda...")
-    it = library.items[idx]
-    caption = f"🎵 <b>{esc(it['performer'])} — {esc(it['title'])}</b>"
+    await send_library_item(cb.message, it)
+
+
+# --------------------------------------------------------------------------- #
+# Admin panel (faqat ADMIN_IDS dagi foydalanuvchilar uchun)
+# --------------------------------------------------------------------------- #
+ADMIN_IDS = {int(x) for x in re.findall(r"-?\d+", os.getenv("ADMIN_IDS", ""))}
+ADMIN_LIST_LIMIT = 30
+
+
+def is_admin(user_id: int | None) -> bool:
+    return user_id is not None and user_id in ADMIN_IDS
+
+
+def admin_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Statistika", callback_data="adm:stats"),
+         InlineKeyboardButton(text="📅 Bugun qo'shilgan", callback_data="adm:today")],
+        [InlineKeyboardButton(text="♻️ Takroriylar", callback_data="adm:dups"),
+         InlineKeyboardButton(text="🩺 Bazani tekshirish", callback_data="adm:check")],
+        [InlineKeyboardButton(text="🔍 Qidirish", callback_data="adm:find")],
+    ])
+
+
+def item_line(it: dict) -> str:
+    return (f"<code>#{it['id']}</code> {esc(it['artist'])} — {esc(it['title'])} "
+            f"<i>({fmt_duration(it.get('duration')) or '—'}, {fmt_size(it.get('file_size'))})</i>")
+
+
+def admin_stats_text() -> str:
+    s = library.stats()
+    if not library.chat_id:
+        head = "⚠️ Kutubxona kanali ulanmagan (LIBRARY_CHANNEL_ID).\n\n"
+    else:
+        head = f"📡 Kanal: <code>{library.chat_id}</code>\n\n"
+    hours, rem = divmod(s["duration"], 3600)
+    return (head +
+            f"🎵 Jami musiqalar: <b>{s['total']}</b>\n"
+            f"📅 Bugun qo'shilgan: <b>{s['today']}</b>\n"
+            f"👤 Ijrochilar: <b>{s['artists']}</b>\n"
+            f"💾 Umumiy hajm: <b>{fmt_size(s['size'])}</b>\n"
+            f"⏱ Umumiy davomiylik: <b>{hours} soat {rem // 60} daqiqa</b>\n"
+            f"🗑 O'chirilganlar: {s['deleted']}")
+
+
+def admin_today_text() -> str:
+    items = library.added_on(datetime.now(TZ).date())
+    if not items:
+        return "📅 Bugun hali musiqa qo'shilmagan."
+    lines = [f"📅 Bugun qo'shilgan: <b>{len(items)}</b>\n"]
+    lines += [item_line(it) for it in items[-ADMIN_LIST_LIMIT:]]
+    if len(items) > ADMIN_LIST_LIMIT:
+        lines.append(f"\n… va yana {len(items) - ADMIN_LIST_LIMIT} ta")
+    return "\n".join(lines)
+
+
+def admin_dups_text() -> str:
+    groups = library.duplicates()
+    if not groups:
+        return "♻️ Takroriy musiqalar topilmadi ✅\n\n<i>Bir xil fayllar baza qo'shayotganda avtomatik o'tkazib yuboriladi.</i>"
+    lines = [f"♻️ Bir xil nomli musiqalar: <b>{len(groups)}</b> guruh\n"]
+    for g in groups[:15]:
+        lines += [item_line(it) for it in g]
+        lines.append("")
+    lines.append("O'chirish: <code>/delete ID</code>")
+    return "\n".join(lines)
+
+
+async def admin_find(message: Message, query: str) -> None:
+    hits = library.search(query)
+    if not hits:
+        await message.answer(f"🔍 «{esc(query)}» — bazada topilmadi.")
+        return
+    shown = hits[:ADMIN_LIST_LIMIT]
+    lines = [f"🔍 «{esc(query)}» — bazada <b>{len(hits)}</b> ta\n"] + [item_line(it) for it in shown]
+    if len(hits) > len(shown):
+        lines.append(f"\n… va yana {len(hits) - len(shown)} ta")
+    buttons = [InlineKeyboardButton(text=f"#{it['id']}", callback_data=f"l:{it['id']}") for it in shown[:10]]
+    kb = InlineKeyboardMarkup(inline_keyboard=[buttons[i:i + 5] for i in range(0, len(buttons), 5)])
+    await message.answer("\n".join(lines), reply_markup=kb)
+
+
+async def admin_check(message: Message) -> None:
+    status = await message.answer(f"🩺 Tekshirilmoqda... ({len(library.active())} ta musiqa)")
     try:
-        await cb.message.answer_audio(it["file_id"], caption=caption)
+        r = await library.check(message.bot)
     except Exception:
-        log.exception("Kutubxona audiosini yuborib bo'lmadi")
-        await cb.message.answer("❌ Qo'shiqni yuborib bo'lmadi.")
+        log.exception("Bazani tekshirishda xato")
+        await status.edit_text("❌ Tekshiruvda xato bo'ldi, logni ko'ring.")
+        return
+    lines = [
+        "🩺 <b>Baza tekshiruvi</b>\n",
+        f"✔️ Tekshirildi: {r['checked']}",
+        f"📌 Indeks fayli: {'bor ✅' if r['index_ok'] else 'hali yaratilmagan ⚠️'}",
+        f"❌ Ishlamaydigan fayllar: {len(r['broken'])}",
+        f"⚠️ Boshqa muammolar: {len(r['problems'])}",
+    ]
+    if r["broken"]:
+        lines.append("\n<b>Ishlamaydigan fayllar:</b>")
+        lines += [item_line(it) for it in r["broken"][:20]]
+        lines.append("O'chirish: <code>/delete ID</code>")
+    if r["problems"]:
+        lines.append("\n<b>Muammolar:</b>")
+        lines += [esc(p) for p in r["problems"][:20]]
+    if not r["broken"] and not r["problems"]:
+        lines.append("\nHammasi joyida ✅")
+    await status.edit_text("\n".join(lines))
+
+
+PRIVATE = F.chat.type == "private"
+
+
+@router.message(Command("myid"), PRIVATE)
+async def cmd_myid(message: Message) -> None:
+    await message.answer(f"Sizning ID: <code>{message.from_user.id}</code>")
+
+
+@router.message(Command("admin", "stats", "today", "dups", "check", "find", "delete"), PRIVATE)
+async def admin_commands(message: Message) -> None:
+    if not is_admin(message.from_user.id if message.from_user else None):
+        await message.answer("⛔️ Bu buyruq faqat adminlar uchun.")
+        return
+    cmd, _, arg = (message.text or "").partition(" ")
+    cmd = cmd.lstrip("/").split("@")[0].lower()
+    arg = arg.strip()
+    try:
+        if cmd == "admin":
+            await message.answer("🛠 <b>Admin panel</b>\n\n" + admin_stats_text(), reply_markup=admin_keyboard())
+        elif cmd == "stats":
+            await message.answer(admin_stats_text())
+        elif cmd == "today":
+            await message.answer(admin_today_text())
+        elif cmd == "dups":
+            await message.answer(admin_dups_text())
+        elif cmd == "check":
+            await admin_check(message)
+        elif cmd == "find":
+            if not arg:
+                await message.answer("Foydalanish: <code>/find qo'shiq nomi</code>")
+            else:
+                await admin_find(message, arg)
+        elif cmd == "delete":
+            it = library.get(int(arg)) if arg.isdigit() else None
+            if not it:
+                await message.answer("Foydalanish: <code>/delete ID</code> (ID bazada bo'lishi kerak)")
+            else:
+                await library.remove(message.bot, it)
+                await message.answer(f"🗑 O'chirildi: {item_line(it)}")
+    except Exception:
+        log.exception("Admin buyrug'ida xato: %s", message.text)
+        await message.answer("❌ Xato bo'ldi, logni ko'ring.")
+
+
+@router.callback_query(F.data.startswith("adm:"))
+async def admin_buttons(cb: CallbackQuery) -> None:
+    if not is_admin(cb.from_user.id):
+        await cb.answer("⛔️ Faqat adminlar uchun.", show_alert=True)
+        return
+    action = cb.data[4:]
+    await cb.answer()
+    try:
+        if action == "stats":
+            await cb.message.answer(admin_stats_text())
+        elif action == "today":
+            await cb.message.answer(admin_today_text())
+        elif action == "dups":
+            await cb.message.answer(admin_dups_text())
+        elif action == "check":
+            await admin_check(cb.message)
+        elif action == "find":
+            await cb.message.answer("🔍 Bazadan qidirish: <code>/find qo'shiq nomi</code>")
+    except Exception:
+        log.exception("Admin tugmasida xato: %s", cb.data)
+        await cb.message.answer("❌ Xato bo'ldi, logni ko'ring.")
 
 
 # ---- Kutubxona kanali ----
@@ -502,14 +863,15 @@ async def channel_del(message: Message) -> None:
     if message.chat.id != library.chat_id:
         return
     it = await library.remove_by_msg(message.bot, message.reply_to_message.message_id)
-    await message.answer(f"🗑 O'chirildi: {esc(it['performer'])} — {esc(it['title'])}" if it
+    await message.answer(f"🗑 O'chirildi: #{it['id']} {esc(it['artist'])} — {esc(it['title'])}" if it
                          else "Bu xabar kutubxonada yo'q.")
 
 
 @router.channel_post(F.text.startswith("/count"))
 async def channel_count(message: Message) -> None:
     if message.chat.id == library.chat_id:
-        await message.answer(f"📚 Kutubxonada {len(library.active())} ta qo'shiq bor.")
+        s = library.stats()
+        await message.answer(f"📚 Kutubxonada {s['total']} ta qo'shiq bor (bugun +{s['today']}).")
 
 
 @router.channel_post(CHANNEL_AUDIO)
@@ -519,7 +881,7 @@ async def channel_audio(message: Message) -> None:
     try:
         await library.add(message.bot, message)
     except Exception:
-        log.exception("Kutubxonaga qo'shib bo'lmadi")
+        log.exception("Kutubxonaga qo'shib bo'lmadi (post %s)", message.message_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -554,6 +916,7 @@ async def main() -> None:
             await bot.delete_webhook(drop_pending_updates=False)
             await dp.start_polling(bot)
     finally:
+        await library.flush(bot)  # saqlanmagan o'zgarishlarni yozib qo'yamiz
         await http.close()
         await bot.session.close()
 

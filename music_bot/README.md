@@ -56,3 +56,30 @@ Kanaldagi buyruqlar:
 - `/del`: audioga **javob (reply)** qilib yozilsa, o'sha qo'shiqni kutubxonadan o'chiradi
 
 Bot kanalda `library.json` faylini pin qilib qo'yadi, u qo'shiqlar ro'yxati. Uni o'chirmang.
+
+## Admin panel
+
+1. Botga `/myid` deb yozing, bot sizning ID raqamingizni yuboradi.
+2. Render → **Environment** → `ADMIN_IDS` = shu raqam. Bir nechta admin bo'lsa, vergul bilan yozing: `111,222`.
+3. Botga `/admin` yozing.
+
+| Buyruq | Nima qiladi |
+|---|---|
+| `/admin` | Panel: statistika va tugmalar |
+| `/stats` | Jami musiqalar, bugun qo'shilganlar, ijrochilar, hajm, davomiylik |
+| `/today` | Bugun qo'shilgan musiqalar ro'yxati |
+| `/find so'z` | Bazadan qidirish (ID'lari bilan) |
+| `/dups` | Bir xil nomli (takroriy) musiqalar |
+| `/check` | Bazani tekshirish: buzilgan file_id, yo'q maydonlar |
+| `/delete ID` | Musiqani bazadan o'chirish |
+
+Baza har bir musiqa uchun quyidagilarni saqlaydi: ID, nom, ijrochi, `file_id`, `file_unique_id`, davomiylik,
+fayl hajmi, qo'shilgan sana, manba kanal. `file_unique_id` bir xil bo'lgan fayl qayta qo'shilmaydi.
+Foydalanuvchiga qo'shiq `file_id` orqali yuboriladi, serverga yuklab olinmaydi.
+
+## Testlar
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest -q tests
+```
