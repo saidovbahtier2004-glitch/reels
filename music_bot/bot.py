@@ -36,7 +36,7 @@ from shazamio import Shazam
 log = logging.getLogger("music_bot")
 
 DEEZER_API = "https://api.deezer.com"
-PAGE_SIZE = 8
+PAGE_SIZE = 10
 MAX_TG_DOWNLOAD = 20 * 1024 * 1024  # Bot API fayl yuklab olish limiti
 SAMPLE_SECONDS = 20
 SAMPLE_OFFSETS = (0, 15, 35, 60)  # musiqa videoning o'rtasida boshlansa ham topish uchun
@@ -145,23 +145,29 @@ async def show_results(message: Message, query: str, index: int = 0, edit: bool 
             await message.answer(text)
         return
 
-    rows = []
-    for i, t in enumerate(tracks, start=index + 1):
+    # Matn ko'rinishidagi ro'yxat
+    lines = [f"🔍 <b>{esc(query)}</b>\n"]
+    buttons = []
+    for i, t in enumerate(tracks, start=1):
         artist = (t.get("artist") or {}).get("name", "")
-        label = f"{i}. {artist} — {t.get('title', '')}"
+        line = f"<b>{index + i}.</b> {esc(artist)} - {esc(t.get('title', ''))}"
         if t.get("duration"):
-            label += f" ({fmt_duration(t['duration'])})"
-        rows.append([InlineKeyboardButton(text=label[:64], callback_data=f"t:{t['id']}")])
+            line += f"  <b>{fmt_duration(t['duration'])}</b>"
+        lines.append(line)
+        buttons.append(InlineKeyboardButton(text=str(index + i), callback_data=f"t:{t['id']}"))
 
-    nav = []
-    if index > 0:
-        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"p:{max(0, index - PAGE_SIZE)}"))
-    if index + PAGE_SIZE < total:
-        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"p:{index + PAGE_SIZE}"))
-    if nav:
-        rows.append(nav)
+    # Raqamli tugmalar: 5 tadan qatorga
+    rows = [buttons[i:i + 5] for i in range(0, len(buttons), 5)]
 
-    text = f"🔎 <b>{esc(query)}</b> — {total} ta natija. Tanlang:"
+    has_prev = index > 0
+    has_next = index + PAGE_SIZE < total
+    rows.append([
+        InlineKeyboardButton(text="⬅️", callback_data=f"p:{max(0, index - PAGE_SIZE)}" if has_prev else "noop"),
+        InlineKeyboardButton(text="❌", callback_data="close"),
+        InlineKeyboardButton(text="➡️", callback_data=f"p:{index + PAGE_SIZE}" if has_next else "noop"),
+    ])
+
+    text = "\n".join(lines)
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     if edit:
         await message.edit_text(text, reply_markup=kb)
@@ -302,6 +308,20 @@ async def on_page(cb: CallbackQuery) -> None:
         return
     await cb.answer()
     await show_results(cb.message, query, index=int(cb.data[2:]), edit=True)
+
+
+@router.callback_query(F.data == "close")
+async def on_close(cb: CallbackQuery) -> None:
+    await cb.answer()
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "noop")
+async def on_noop(cb: CallbackQuery) -> None:
+    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("t:"))
