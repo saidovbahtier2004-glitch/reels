@@ -346,12 +346,9 @@ async def recognize_file(src: Path, workdir: Path) -> dict | None:
 # --------------------------------------------------------------------------- #
 WELCOME = (
     "🎧✨ <b>Baxtiyor Saidov</b> botiga xush kelibsiz! ✨🎧\n\n"
-    "Bu botda siz qo'shig'ingizni oson topishingiz va yuklab olishingiz mumkin:\n\n"
-    "🔤 <b>Muzika nomi orqali</b> — qo'shiq yoki ijrochi nomini yozing\n"
-    "      masalan: <code>Ummon</code>\n"
-    "🎬 <b>Video orqali</b> — reels, video yoki dumaloq video yuboring\n"
-    "🎙 <b>Golosovoy orqali</b> — qo'shiqni telefonga yaqin qo'yib yozib yuboring\n"
-    "🎵 <b>Audio fayl orqali</b> — nomini aniqlab beraman\n\n"
+    "Bu botda siz qo'shig'ingizni oson topishingiz va yuklab olishingiz mumkin.\n\n"
+    "📩 Menga <b>video parcha</b> 🎬, <b>ovozli xabar</b> 🎙, <b>musiqa parchasi</b> 🎵 "
+    "yoki <b>qo'shiq nomini</b> 🔤 jo'nating.\n\n"
     "⚡️ Tez, oson va bepul!\n"
     "👇 Boshlash uchun hoziroq qo'shiq nomini yozing yoki video yuboring.\n\n"
     "━━━━━━━━━━━━━━━\n"
