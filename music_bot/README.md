@@ -38,3 +38,21 @@ Bot kompyuter yoqiq turganda ishlaydi. Doimiy ishlashi uchun uni VPS'ga (yoki Ra
 
 - Telegram botlar 20 MB dan katta faylni yuklab ololmaydi, shuning uchun uzun videolarni qisqartirib yuboring.
 - Instagram/TikTok havolasi qabul qilinmaydi, videoning o'zini yuborish kerak.
+
+## O'z kutubxonangiz (to'liq qo'shiqlar)
+
+Tarqatishga **ruxsatingiz bor** qo'shiqlarni bot to'liq yuborishi mumkin:
+
+1. Telegramda yangi **maxfiy kanal** oching.
+2. Botni kanalga **admin** qilib qo'shing (xabar yozish, tahrirlash va pin qilish huquqlari bilan).
+3. Kanalga `/id` deb yozing. Bot kanal ID'sini yuboradi (masalan `-1001234567890`).
+4. Render → **Environment** → `LIBRARY_CHANNEL_ID` = shu ID → **Save**.
+5. Kanalga MP3 fayllarni tashlang. Bot ularni avtomatik eslab qoladi.
+
+Qidiruvda kutubxonadagi qo'shiqlar 🎧 belgisi bilan birinchi chiqadi va to'liq yuboriladi.
+
+Kanaldagi buyruqlar:
+- `/count`: kutubxonada nechta qo'shiq borligini ko'rsatadi
+- `/del`: audioga **javob (reply)** qilib yozilsa, o'sha qo'shiqni kutubxonadan o'chiradi
+
+Bot kanalda `library.json` faylini pin qilib qo'yadi, u qo'shiqlar ro'yxati. Uni o'chirmang.
