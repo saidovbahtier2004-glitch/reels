@@ -77,6 +77,46 @@ Baza har bir musiqa uchun quyidagilarni saqlaydi: ID, nom, ijrochi, `file_id`, `
 fayl hajmi, qo'shilgan sana, manba kanal. `file_unique_id` bir xil bo'lgan fayl qayta qo'shilmaydi.
 Foydalanuvchiga qo'shiq `file_id` orqali yuboriladi, serverga yuklab olinmaydi.
 
+## Ommaviy import (faqat litsenziyali musiqa)
+
+Import uchun `importer/` paketi ishlatiladi:
+
+| Fayl | Vazifasi |
+|---|---|
+| `models.py` | `TrackMeta` (nom, ijrochi, ISRC, litsenziya...) va `AudioFile` |
+| `csv_import.py` | CSV o'qish va tekshirish. `license_id` majburiy, muddati o'tgan yoki takroriy qatorlar rad etiladi |
+| `providers.py` | `MusicProvider` interfeysi, `HttpDistributorProvider` shabloni va `PROVIDERS` ro'yxati |
+| `runner.py` | `ImportManager`: batch, progress, pauza, davom ettirish, qayta urinish |
+| `telegram_ui.py` | Admin buyruqlari |
+
+**Usullar (admin, botga shaxsiy chatda):**
+1. **CSV + fayllar.** CSV'ni hujjat qilib yuborasiz ([shablon](importer/template.csv)), keyin MP3'larni yuborasiz.
+   Fayllar `file` ustuni, «Ijrochi - Nomi» yoki audio teglari bo'yicha moslanadi. CSV'da yo'q fayl qabul qilinmaydi.
+   Kanalga `file_id` bilan yuboriladi, qayta yuklab olinmaydi.
+2. **CSV + distributor.** CSV'ni `provider distributor` izohi bilan yuborasiz. Audio distributor API'sidan olinadi.
+3. **Katalog sinxroni.** `/import_sync distributor` buyrug'i distributor katalogini sahifalab import qiladi.
+
+Buyruqlar: `/import`, `/import_status [ID]`, `/import_pause ID`, `/import_resume ID`, `/import_cancel ID`,
+`/import_finish ID`, `/import_failed ID`, `/import_retry ID`.
+
+**Distributorni ulash** (Render → Environment):
+```
+PROVIDER_DISTRIBUTOR_BASE_URL=https://api.distributor.example/v1
+PROVIDER_DISTRIBUTOR_API_KEY=...            # Bearer token
+PROVIDER_DISTRIBUTOR_ALLOWED_HOSTS=cdn.distributor.example   # audio CDN bo'lsa
+```
+Distributor API hujjatlari kelgach, `HttpDistributorProvider` ichidagi endpoint va maydon nomlarini moslang.
+Boshqa API bo'lsa, `MusicProvider`'dan yangi klass yozib, uni `PROVIDERS`'ga qo'shing.
+
+**Xavfsizlik va cheklovlar:**
+- Audio faqat HTTPS orqali, `BASE_URL` hosti yoki `ALLOWED_HOSTS`'dan yuklanadi. Redirect ham tekshiriladi. Boshqa manbalar bloklanadi va ularga qayta urinilmaydi.
+- API kalit logga va xatolar matniga chiqmaydi.
+- Telegram kanalga taxminan 20 xabar/daqiqa qabul qiladi. Import trek orasida 3,5 soniya kutadi, ya'ni soatiga ~1000 trek. `RetryAfter` hisobga olinadi.
+- Bitta fayl 49 MB dan katta bo'lmasligi kerak (bot API limiti).
+- Job holati `library.json` ichida saqlanadi. Server qayta ishga tushsa, `running` job'lar o'zi davom etadi.
+  Render bepul tarifda server ~15 daqiqa so'rov kelmasa uxlaydi. Uyg'otish uchun botga istalgan xabar yozing.
+- Xato bergan trek 3 marta qayta uriniladi, keyin `failed` bo'ladi (`/import_failed`, `/import_retry`).
+
 ## Testlar
 
 ```bash

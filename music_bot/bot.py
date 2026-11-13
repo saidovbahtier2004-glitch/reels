@@ -42,6 +42,10 @@ from aiogram.types import (
 )
 from shazamio import Shazam
 
+from importer.runner import ImportManager
+from importer.telegram_ui import build_router as build_import_router
+from importer.text import norm
+
 log = logging.getLogger("music_bot")
 
 DEEZER_API = "https://api.deezer.com"
@@ -66,12 +70,6 @@ INDEX_CAPTION = "📚 Kutubxona indeksi — o'chirmang"
 INDEX_VERSION = 2
 TZ = timezone(timedelta(hours=5))  # Toshkent vaqti
 SAVE_DELAY = 3.0  # bir nechta audio birdan tashlansa, indeks bir marta yoziladi
-
-
-def norm(text: str) -> str:
-    text = (text or "").lower()
-    text = re.sub(r"[ʻʼ‘’`´']", "", text)
-    return re.sub(r"[^\w]+", " ", text).strip()
 
 
 def now_iso() -> str:
@@ -119,6 +117,7 @@ class Library:
         self.index_msg_id: int | None = None
         self.items: list[dict] = []
         self.by_uid: dict[str, dict] = {}
+        self.jobs: dict[str, dict] = {}  # import job'lari holati (importer paketi)
         self.lock = asyncio.Lock()
         self._dirty = False
         self._save_task: asyncio.Task | None = None
@@ -144,6 +143,7 @@ class Library:
     def load_data(self, data: dict) -> None:
         """JSON'dan yuklaydi va eski (v1) yozuvlarni yangi formatga o'tkazadi."""
         self.items = []
+        self.jobs = dict(data.get("jobs", {}))
         for i, raw in enumerate(data.get("items", [])):
             it = dict(raw)
             it["id"] = i + 1  # id = ro'yxatdagi o'rni, o'chirilganlar ham joyida qoladi
@@ -165,7 +165,8 @@ class Library:
 
     def dump(self) -> bytes:
         items = [{k: v for k, v in it.items() if k != "key"} for it in self.items]
-        return json.dumps({"version": INDEX_VERSION, "items": items}, ensure_ascii=False).encode()
+        return json.dumps({"version": INDEX_VERSION, "items": items, "jobs": self.jobs},
+                          ensure_ascii=False).encode()
 
     async def _write(self, bot: Bot) -> None:
         doc = BufferedInputFile(self.dump(), INDEX_NAME)
@@ -295,8 +296,23 @@ class Library:
                 "index_ok": bool(self.index_msg_id)}
 
     # ---- yozish ----
-    async def add(self, bot: Bot, message: Message) -> dict | None:
-        """Kanal postidagi audioni bazaga qo'shadi. Takroriy bo'lsa None qaytaradi."""
+    def find_existing(self, *, isrc: str = "", provider: str = "", external_id: str = "",
+                      artist: str = "", title: str = "", duration: int = 0) -> dict | None:
+        """Import paytida takrorni aniqlash: ISRC, provider ID yoki ijrochi+nom+davomiylik."""
+        name = norm(f"{artist} {title}") if title else ""
+        for it in self.active():
+            if isrc and it.get("isrc") and it["isrc"].upper() == isrc.upper():
+                return it
+            if external_id and it.get("external_id") == external_id and it.get("provider") == provider:
+                return it
+            if name and norm(f"{it['artist']} {it['title']}") == name and (
+                    not duration or not it.get("duration") or abs(it["duration"] - duration) <= 2):
+                return it
+        return None
+
+    async def add(self, bot: Bot, message: Message, extra: dict | None = None) -> dict | None:
+        """Kanal postidagi audioni bazaga qo'shadi. Takroriy bo'lsa None qaytaradi.
+        extra — import metadata'si (isrc, license_id, provider, ...), nom/ijrochini ham ustidan yozadi."""
         audio = message.audio or message.document
         title, artist = parse_audio_meta(audio)
         async with self.lock:
@@ -316,6 +332,9 @@ class Library:
                 "msg_id": message.message_id,
                 "file_name": getattr(audio, "file_name", None) or "",
             }
+            if extra:
+                item.update({k: v for k, v in extra.items() if v not in (None, "")})
+                title, artist = item["title"], item["artist"]
             item["key"] = norm(f"{artist} {title} {item['file_name']}")
             self.items.append(item)
             self.by_uid[item["file_unique_id"]] = item
@@ -885,6 +904,15 @@ async def channel_audio(message: Message) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Ommaviy import (importer paketi). Import router'i birinchi turadi, chunki u
+# ochiq import bo'lganda admin yuborgan audiolarni Shazam'dan oldin ushlaydi.
+# --------------------------------------------------------------------------- #
+import_manager = ImportManager(lambda: library)
+root_router = Router(name="root")
+root_router.include_routers(build_import_router(import_manager, is_admin), router)
+
+
+# --------------------------------------------------------------------------- #
 async def main() -> None:
     global http
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -902,8 +930,10 @@ async def main() -> None:
     http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
     bot = Bot(token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
-    dp.include_router(router)
+    dp.include_router(root_router)
     await library.load(bot)
+    import_manager.bind(bot)
+    await import_manager.resume_all()  # server qayta ishga tushsa, importlar davom etadi
 
     # Serverda (Render va h.k.) webhook rejimi: Telegram o'zi xabarlarni yuboradi,
     # shuning uchun bepul server "uxlab qolsa" ham birinchi xabarda uyg'onadi.

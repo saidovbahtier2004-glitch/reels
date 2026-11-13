@@ -19,7 +19,7 @@ from aiogram.methods import (
     AnswerCallbackQuery, EditMessageMedia, GetFile, PinChatMessage, SendAudio,
     SendDocument, SendMessage,
 )
-from aiogram.types import Chat, File, Message, Update
+from aiogram.types import Audio, Chat, File, InputFile, Message, Update
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import bot as botmod  # noqa: E402
@@ -34,12 +34,13 @@ class FakeSession(BaseSession):
         super().__init__()
         self.calls: list = []
         self.next_id = 1000
+        self.files: dict[str, bytes] = {}  # file_id -> yuklab olinadigan baytlar
 
     async def close(self) -> None:
         pass
 
-    async def stream_content(self, *a, **kw):  # pragma: no cover
-        yield b""
+    async def stream_content(self, url, *a, **kw):
+        yield self.files.get(url.rsplit("/", 1)[-1], b"")
 
     async def make_request(self, bot, method, timeout=None):
         self.calls.append(method)
@@ -48,9 +49,19 @@ class FakeSession(BaseSession):
                 raise TelegramBadRequest(method=method, message="Bad Request: wrong file_id")
             if method.file_id.startswith("BIG"):
                 raise TelegramBadRequest(method=method, message="Bad Request: file is too big")
-            return File(file_id=method.file_id, file_unique_id="u")
+            return File(file_id=method.file_id, file_unique_id="u", file_path=method.file_id)
         if isinstance(method, (PinChatMessage, AnswerCallbackQuery)):
             return True
+        if isinstance(method, SendAudio):
+            self.next_id += 1
+            if isinstance(method.audio, InputFile):
+                fid, uid = f"UP{self.next_id}", f"UPU{self.next_id}"
+            else:
+                fid, uid = method.audio, "U_" + method.audio
+            return Message(message_id=self.next_id, date=dt.datetime.now(),
+                           chat=Chat(id=method.chat_id, type="channel" if method.chat_id < 0 else "private"),
+                           audio=Audio(file_id=fid, file_unique_id=uid, duration=method.duration or 0,
+                                       title=method.title, performer=method.performer, file_size=1234)).as_(bot)
         if hasattr(method, "chat_id"):
             self.next_id += 1
             chat_id = method.chat_id
@@ -74,8 +85,8 @@ def env(monkeypatch):
               default=botmod.DefaultBotProperties(parse_mode=botmod.ParseMode.HTML))
     dp = Dispatcher()
     # router faqat bir marta ulanishi mumkin — har testda yangi Dispatcher'ga qayta bog'laymiz
-    botmod.router._parent_router = None
-    dp.include_router(botmod.router)
+    botmod.root_router._parent_router = None
+    dp.include_router(botmod.root_router)
 
     lib = botmod.Library()
     lib.chat_id = CHANNEL
@@ -195,8 +206,8 @@ def test_index_roundtrip_and_v1_migration(env):
 
 def test_channel_post_is_subscribed():
     dp = Dispatcher()
-    botmod.router._parent_router = None
-    dp.include_router(botmod.router)
+    botmod.root_router._parent_router = None
+    dp.include_router(botmod.root_router)
     assert "channel_post" in dp.resolve_used_update_types()
 
 
