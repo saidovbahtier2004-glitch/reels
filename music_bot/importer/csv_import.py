@@ -22,6 +22,7 @@ REQUIRED = ("title", "artist", "license_id")
 
 ALIASES = {
     "title": "title", "name": "title", "song": "title", "track": "title", "nomi": "title",
+    "song_title": "title", "track_title": "title", "artist_name": "artist", "isrc_code": "isrc",
     "qoshiq": "title", "название": "title",
     "artist": "artist", "performer": "artist", "ijrochi": "artist", "исполнитель": "artist",
     "license_id": "license_id", "license": "license_id", "licence": "license_id",
@@ -63,7 +64,9 @@ def parse_duration(value: str) -> int:
     return int(float(value))
 
 
-def parse_csv(data: bytes | str, provider: str = "") -> CsvResult:
+def parse_csv(data: bytes | str, provider: str = "", require_license: bool = True) -> CsvResult:
+    """require_license=False — o'z original yozuvlaringiz (Vault): license_id ixtiyoriy,
+    litsenziya admin tasdig'i bilan beriladi."""
     text = data.decode("utf-8-sig") if isinstance(data, bytes) else data.lstrip("﻿")
     res = CsvResult()
     if not text.strip():
@@ -77,7 +80,8 @@ def parse_csv(data: bytes | str, provider: str = "") -> CsvResult:
     header = next(reader, [])
     keys = [_key(h) for h in header]
     res.columns = keys
-    missing = [c for c in REQUIRED if c not in keys]
+    required = REQUIRED if require_license else ("title", "artist")
+    missing = [c for c in required if c not in keys]
     if missing:
         res.errors.append("Majburiy ustun(lar) yo'q: " + ", ".join(missing)
                           + ". Faqat litsenziyali treklar import qilinadi, license_id shart.")
@@ -107,7 +111,8 @@ def parse_csv(data: bytes | str, provider: str = "") -> CsvResult:
         if not track.title or not track.artist:
             res.errors.append(f"{line_no}-qator: title yoki artist bo'sh")
             continue
-        problem = track.license_problem(today)
+        problem = track.license_problem(today) if (require_license or track.license_id
+                                                   or track.license_expires) else None
         if problem:
             res.errors.append(f"{line_no}-qator ({track.artist} — {track.title}): {problem}")
             continue

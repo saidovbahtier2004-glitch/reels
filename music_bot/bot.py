@@ -117,6 +117,7 @@ class Library:
         self.index_msg_id: int | None = None
         self.items: list[dict] = []
         self.by_uid: dict[str, dict] = {}
+        self.by_sha: dict[str, dict] = {}  # import qilingan originallar (sha256)
         self.jobs: dict[str, dict] = {}  # import job'lari holati (importer paketi)
         self.lock = asyncio.Lock()
         self._dirty = False
@@ -162,6 +163,7 @@ class Library:
     def _reindex(self) -> None:
         self.by_uid = {it["file_unique_id"]: it for it in self.items
                        if not it.get("deleted") and it.get("file_unique_id")}
+        self.by_sha = {it["sha256"]: it for it in self.items if not it.get("deleted") and it.get("sha256")}
 
     def dump(self) -> bytes:
         items = [{k: v for k, v in it.items() if k != "key"} for it in self.items]
@@ -338,6 +340,8 @@ class Library:
             item["key"] = norm(f"{artist} {title} {item['file_name']}")
             self.items.append(item)
             self.by_uid[item["file_unique_id"]] = item
+            if item.get("sha256"):
+                self.by_sha[item["sha256"]] = item
         log.info("Kutubxonaga qo'shildi #%s: %s — %s", item["id"], artist, title)
         self.schedule_save(bot)
         return item

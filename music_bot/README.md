@@ -117,6 +117,40 @@ Boshqa API bo'lsa, `MusicProvider`'dan yangi klass yozib, uni `PROVIDERS`'ga qo'
   Render bepul tarifda server ~15 daqiqa so'rov kelmasa uxlaydi. Uyg'otish uchun botga istalgan xabar yozing.
 - Xato bergan trek 3 marta qayta uriniladi, keyin `failed` bo'ladi (`/import_failed`, `/import_retry`).
 
+## DistroKid Vault importi (o'zingizning original yozuvlaringiz)
+
+DistroKid ommaviy katalog API'sini bermaydi. Shu sababli bot DistroKid'ga ulanmaydi va saytni o'qimaydi.
+Siz Vault'dan yuklab olgan backup'larni botga yuborasiz.
+
+1. Botga `/vault` yozing va fayllar o'zingizga tegishli ekanini **✅ Tasdiqlayman** tugmasi bilan tasdiqlang.
+2. Yuboring:
+   - **ZIP backup'lar.** Har biri ≤20 MB bo'lishi kerak (Telegram bot API limiti), katta backup'ni albomlarga bo'ling.
+     ZIP ichidagi papka tuzilishi muhim emas, `__MACOSX`, rasm va boshqa fayllar o'tkazib yuboriladi.
+   - **alohida audio** (MP3, M4A, WAV, FLAC, AIFF, OGG). 20 MB dan katta MP3/M4A ham qabul qilinadi.
+   - **CSV metadata** (ixtiyoriy): `title, artist`, qo'shimcha `isrc, album, file, duration`.
+   - `/vault_folder yo'l`: serverdagi `IMPORT_ROOT` ichidagi papka (doimiy disk bo'lsa).
+   - `/vault_artist Ism`: ijrochi topilmagan fayllar uchun standart ijrochi.
+3. **▶️ Importni boshlash** tugmasini bosing.
+
+**Moslash tartibi:** CSV'dagi ISRC → `file` ustuni → ijrochi+nom → nom (bitta nomzod bo'lsa)
+→ o'xshash nom (faqat bitta aniq nomzod bo'lsa). Qiymatlar quyidagi ustuvorlikda olinadi: CSV, keyin audio teglari, keyin fayl nomi
+(`01 - Ijrochi - Nomi`, `Nomi (ISRC)`). Moslab bo'lmagan fayllar **🏷 Mos kelmaganlar** ro'yxatida ko'rinadi.
+
+**Takrorlar** sha256 bo'yicha aniqlanadi: ZIP ichida, sessiyada va bazada. Qo'shimcha ravishda ISRC va ijrochi+nom+davomiylik ham tekshiriladi.
+Bir backup'ni ikki marta import qilsangiz, hech narsa qayta yuklanmaydi.
+
+**Saqlash:** fayl kutubxona kanaliga yuklanadi va bazaga `file_id` bilan yoziladi. Qidiruv va yetkazish avvalgidek ishlaydi.
+WAV, FLAC, AIFF va OGG fayllar MP3 320k ga o'giriladi. Bazaga `sha256`, `isrc`, `album`, `source_file` va `license_id`
+(`own-master:vault-job-N`) yoziladi. `ARCHIVE_DIR` berilsa, originallar o'sha papkaga sha256 nomi bilan saqlanadi.
+Buning uchun doimiy disk kerak (Render Disk). Bepul tarifda bu disk har deploy'da tozalanadi.
+
+**Progress ekrani:** foiz, qo'shilgan/bazada bor/xato/navbatda/metadata yo'q soni, metadata manbalari, qolgan vaqt.
+Tugmalari: ⏸ Pauza, ▶️ Davom, 🔄 Yangilash, 📋 Xatolar, 🏷 Mos kelmaganlar, ⏭ Yakunlash, ❌ Bekor.
+`/imports` barcha import'larni ko'rsatadi.
+
+**Resume:** job holati indeksda saqlanadi. Server qayta yonsa, ZIP Telegram'dan `file_id` orqali qayta yuklanadi
+va import qolgan joyidan davom etadi. Yuklangan treklar qayta yuklanmaydi.
+
 ## Testlar
 
 ```bash

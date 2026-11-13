@@ -40,7 +40,9 @@ class TrackMeta:
     @classmethod
     def from_dict(cls, d: dict) -> "TrackMeta":
         names = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in d.items() if k in names})
+        data = {"title": "", "artist": "", "license_id": ""}
+        data.update({k: v for k, v in d.items() if k in names})
+        return cls(**data)
 
     def library_extra(self) -> dict:
         """Bazaga yoziladigan qo'shimcha maydonlar."""

@@ -7,6 +7,7 @@ Job turlari:
   files         — CSV + admin botga yuborgan litsenziyali audio fayllar
   csv_provider  — CSV'dagi treklar audiosi distributor API'sidan olinadi
   provider      — distributor katalogi to'liq sinxronlanadi (sahifalab, cursor bilan)
+  vault         — DistroKid Vault backup'lari (ZIP / papka / fayllar) + ixtiyoriy CSV
 
 Trek holatlari: waiting_file → pending → done | skipped | failed
 """
@@ -14,7 +15,9 @@ Trek holatlari: waiting_file → pending → done | skipped | failed
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 from typing import Awaitable, Callable
 
@@ -25,6 +28,8 @@ from aiogram.types import BufferedInputFile, Message
 from .models import AudioFile, TrackMeta
 from .providers import MusicProvider, ProviderError, SourceNotAllowed, create_provider
 from .text import norm
+from .vault import (ArchiveStorage, Matcher, ScannedFile, SourceCache, VaultError, build_track,
+                    to_telegram_audio)
 
 log = logging.getLogger("music_bot.importer")
 TZ = timezone(timedelta(hours=5))
@@ -59,6 +64,8 @@ class ImportManager:
         self.provider_factory = provider_factory
         self.on_progress: Callable[[dict], Awaitable[None]] | None = None
         self._tasks: dict[str, asyncio.Task] = {}
+        self.cache = SourceCache()
+        self.archive = ArchiveStorage()
         self._upload_lock = asyncio.Lock()  # bir vaqtda bitta job kanalga yozadi
 
     # ---- holat ----
@@ -97,7 +104,7 @@ class ImportManager:
         initial = WAITING if kind == "files" else PENDING
         job = {
             "id": job_id, "kind": kind, "provider": provider, "owner": owner,
-            "status": COLLECTING if kind == "files" else RUNNING,
+            "status": COLLECTING if kind in ("files", "vault") else RUNNING,
             "created": now_iso(), "updated": now_iso(),
             "cursor": None, "catalog_done": kind != "provider",
             "items": [{"n": i + 1, "track": t.to_dict(), "status": initial, "attempts": 0}
@@ -144,6 +151,76 @@ class ImportManager:
         self.save(job)
         if job["status"] == RUNNING:
             self.start(job["id"])
+
+    # ---- DistroKid Vault ----
+    def vault_job(self) -> dict | None:
+        """Hozir fayl qabul qilayotgan (boshlanmagan) Vault sessiyasi."""
+        for j in sorted(self.jobs.values(), key=lambda j: int(j["id"]), reverse=True):
+            if j["kind"] == "vault" and j["status"] == COLLECTING:
+                return j
+        return None
+
+    def create_vault_job(self, owner: int) -> dict:
+        job = self.create_job("vault", [], provider="distrokid-vault", owner=owner)
+        job.update(sources=[], csv=[], default_artist="",
+                   attestation={"by": owner, "at": now_iso(),
+                                "text": "Admin fayllar o'ziga tegishli original yozuvlar ekanini tasdiqladi"})
+        self.save(job)
+        return job
+
+    def add_vault_source(self, job: dict, source: dict, files: list[ScannedFile]) -> dict:
+        """Manbadagi audiolarni job'ga qo'shadi. Natija: qo'shildi / takroriy / bazada bor."""
+        job["sources"].append(source)
+        idx = len(job["sources"]) - 1
+        seen = {it["scan"].get("sha256") for it in job["items"] if it["scan"].get("sha256")}
+        res = {"added": 0, "dup_in_job": 0, "in_library": 0}
+        for f in files:
+            if f.sha256 and f.sha256 in seen:
+                res["dup_in_job"] += 1
+                continue
+            seen.add(f.sha256)
+            item = {"n": len(job["items"]) + 1, "src": idx, "scan": f.to_dict(), "track": {},
+                    "status": PENDING, "attempts": 0}
+            if source["type"] == "tg_file" and source.get("direct"):
+                item.update(direct_file_id=source["file_id"], file_uid=source.get("file_uid"))
+            existing = self.library.by_sha.get(f.sha256) if f.sha256 else None
+            if existing is None and item.get("file_uid"):
+                existing = self.library.by_uid.get(item["file_uid"])
+            if existing is not None:
+                item.update(status=SKIPPED, error="bazada bor (bir xil fayl)", lib_id=existing["id"])
+                res["in_library"] += 1
+            job["items"].append(item)
+            res["added"] += 1
+        self.rematch(job)
+        return res
+
+    def apply_csv(self, job: dict, tracks: list[TrackMeta]) -> None:
+        job["csv"] = [t.to_dict() for t in tracks]
+        self.rematch(job)
+
+    def rematch(self, job: dict) -> None:
+        matcher = Matcher([TrackMeta.from_dict(d) for d in job.get("csv", [])])
+        license_id = f"own-master:vault-job-{job['id']}"
+        for it in job["items"]:
+            if it["status"] not in (PENDING, WAITING):
+                continue
+            f = ScannedFile(**it["scan"])
+            row, reason = matcher.match(f)
+            track, problem = build_track(f, row, default_artist=job.get("default_artist", ""),
+                                         license_id=license_id)
+            if track is None:
+                it.update(track={}, match="", status=WAITING, error=problem)
+            else:
+                it.update(track=track.to_dict(), match=reason or ("tags" if f.tags.get("title") else "filename"),
+                          status=PENDING, error=None)
+        self.save(job)
+
+    def start_vault(self, job: dict) -> bool:
+        if job["status"] != COLLECTING or not any(it["status"] == PENDING for it in job["items"]):
+            return False
+        job["status"] = RUNNING
+        self.save(job)
+        return self.start(job["id"])
 
     # ---- boshqaruv ----
     def start(self, job_id: str) -> bool:
@@ -237,6 +314,8 @@ class ImportManager:
         finally:
             if provider:
                 await provider.close()
+            if job["kind"] == "vault" and job["status"] in (FINISHED, CANCELLED):
+                self.cache.drop(job["id"])
             await self._progress(job)
 
     async def _loop(self, job: dict, provider: MusicProvider | None) -> None:
@@ -296,6 +375,9 @@ class ImportManager:
                                      artist=track.artist, title=track.title, duration=track.duration)
         if existing is None and item.get("file_uid"):
             existing = lib.by_uid.get(item["file_uid"])
+        sha = (item.get("scan") or {}).get("sha256")
+        if existing is None and sha:
+            existing = lib.by_sha.get(sha)
         if existing is not None:
             item.update(status=SKIPPED, error="bazada bor", lib_id=existing["id"])
             return
@@ -307,15 +389,30 @@ class ImportManager:
             return
         try:
             audio: AudioFile | None = None
+            file_id = item.get("file_id")
+            extra = track.library_extra() | {"import_job": job["id"]}
             if job["kind"] == "files":
-                if not item.get("file_id"):
+                if not file_id:
                     item["status"] = WAITING
                     return
+            elif job["kind"] == "vault":
+                extra |= {"source_file": item["scan"]["member"] or item["scan"]["name"], "sha256": sha}
+                if item.get("direct_file_id"):
+                    file_id = item["direct_file_id"]  # >20 MB MP3/M4A: Telegram'da bor, file_id bilan
+                else:
+                    data = await self.cache.read(self.bot, job, item)
+                    if sha and hashlib.sha256(data).hexdigest() != sha:
+                        raise VaultError("manba fayli o'zgargan (sha256 mos emas)")
+                    ext = Path(item["scan"]["name"]).suffix
+                    stored = await asyncio.to_thread(self.archive.save, sha, ext, data) if sha else None
+                    if stored:
+                        extra["archive_path"] = stored
+                    out, name = await to_telegram_audio(data, item["scan"]["name"], track)
+                    audio = AudioFile(out, name)
             else:
                 audio = await provider.fetch_audio(track)
             async with self._upload_lock:
-                msg = await self._upload(track, file_id=item.get("file_id"), audio=audio)
-                extra = track.library_extra() | {"import_job": job["id"]}
+                msg = await self._upload(track, file_id=file_id, audio=audio)
                 added = await lib.add(self.bot, msg, extra=extra)
                 await asyncio.sleep(self.delay)
             if added is None:
@@ -324,6 +421,8 @@ class ImportManager:
                 item.update(status=DONE, lib_id=added["id"], error=None)
         except ProviderError as e:
             self._fail(job, item, str(e), permanent=isinstance(e, SourceNotAllowed))
+        except VaultError as e:
+            self._fail(job, item, str(e), permanent=True)
         except Exception as e:  # noqa: BLE001
             log.exception("Import #%s, trek %s xatosi", job["id"], item["n"])
             self._fail(job, item, f"{type(e).__name__}: {e}")
