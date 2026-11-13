@@ -258,20 +258,19 @@ async def on_media(message: Message) -> None:
     title = track.get("title", "")
     artist = track.get("subtitle", "")
     shazam_link = track.get("url")
-    await status.edit_text(f"✅ Topildi: <b>{esc(artist)} — {esc(title)}</b>")
+    found_text = f"✅ Topildi: <b>{esc(artist)} — {esc(title)}</b>"
+    if shazam_link:
+        found_text += f'\n<a href="{esc(shazam_link)}">Shazam\'da ochish</a>'
+    await status.edit_text(found_text, disable_web_page_preview=True)
 
-    # Shazam natijasini Deezer'dan qidirib, audio bilan yuboramiz
+    # Topilgan qo'shiqning variantlari (original, remix, cover...) ro'yxati —
+    # foydalanuvchi o'ziga yoqqanini tanlaydi.
+    query = f"{artist} {title}"
+    last_query[message.chat.id] = query
     try:
-        found, _ = await deezer_search(f'artist:"{artist}" track:"{title}"', limit=1)
-        if not found:
-            found, _ = await deezer_search(f"{artist} {title}", limit=1)
+        await show_results(message, query)
     except Exception:
         log.exception("Deezer qidiruv xatosi")
-        found = []
-
-    if found:
-        await send_track(message, found[0], shazam_link=shazam_link)
-    else:
         await message.answer(
             f"🎵 <b>{esc(artist)} — {esc(title)}</b>",
             reply_markup=links_keyboard(artist, title, shazam_link=shazam_link),
@@ -336,12 +335,46 @@ async def main() -> None:
     bot = Bot(token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     dp.include_router(router)
+
+    # Serverda (Render va h.k.) webhook rejimi: Telegram o'zi xabarlarni yuboradi,
+    # shuning uchun bepul server "uxlab qolsa" ham birinchi xabarda uyg'onadi.
+    base_url = os.getenv("WEBHOOK_URL") or os.getenv("RENDER_EXTERNAL_URL")
     try:
-        log.info("Bot ishga tushdi")
-        await dp.start_polling(bot)
+        if base_url:
+            await run_webhook(bot, dp, token, base_url.rstrip("/"))
+        else:
+            log.info("Bot ishga tushdi (polling)")
+            await bot.delete_webhook(drop_pending_updates=False)
+            await dp.start_polling(bot)
     finally:
         await http.close()
         await bot.session.close()
+
+
+async def run_webhook(bot: Bot, dp: Dispatcher, token: str, base_url: str) -> None:
+    import hashlib
+
+    from aiohttp import web
+    from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+
+    secret = hashlib.sha256(token.encode()).hexdigest()[:32]
+    path = f"/tg/{secret}"
+
+    app = web.Application()
+    app.router.add_get("/", lambda _: web.Response(text="Music bot ishlayapti ✅"))
+    SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=secret).register(app, path=path)
+    setup_application(app, dp, bot=bot)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", "8080"))
+    await web.TCPSite(runner, "0.0.0.0", port).start()
+    await bot.set_webhook(f"{base_url}{path}", secret_token=secret, drop_pending_updates=False)
+    log.info("Bot ishga tushdi (webhook, port %s)", port)
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await runner.cleanup()
 
 
 if __name__ == "__main__":

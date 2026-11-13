@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: music-bot
+    runtime: docker
+    plan: free
+    rootDir: music_bot
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
