@@ -435,6 +435,14 @@ class Library:
         log.info("Kutubxonadan o'chirildi #%s: %s — %s", item["id"], item["artist"], item["title"])
         self.schedule_save(bot)
 
+    async def update_item(self, bot: Bot, item: dict, fields: dict) -> None:
+        """Mavjud yozuvni yangilaydi (masalan, qayta tekshirilgan atribusiya ma'lumotlari)."""
+        async with self.lock:
+            item.update({k: v for k, v in fields.items() if v not in (None, "")})
+            item["key"] = norm(f"{item['artist']} {item['title']} {item.get('file_name', '')}")
+            self._dirty_shards.add(self._shard_of(item))
+        self.schedule_save(bot)
+
     async def remove_by_msg(self, bot: Bot, msg_id: int) -> dict | None:
         for it in self.items:
             if it.get("msg_id") == msg_id and not it.get("deleted"):

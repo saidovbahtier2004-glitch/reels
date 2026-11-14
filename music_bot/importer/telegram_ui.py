@@ -151,16 +151,19 @@ def compliance_rows(job: dict, library) -> tuple[list[dict], dict]:
             "source_url_http": chk.get("source_http", ""), "source_sha1_verified": chk.get("source_sha1", ""),
             "telegram_copy_sha1_match": {True: "ha", False: "YO'Q", None: "tekshirilmadi (>20 MB)"}.get(tg, ""),
             "attribution_in_caption": "ha" if chk.get("caption") else "",
-            "nd_unmodified": ("ha" if tg else "tekshirilmadi") if code.endswith("-nd") and it["status"] == DONE else
-                             ("" if not code.endswith("-nd") else "-"),
+            "nd_unmodified": ("ha" if tg else "tekshirilmadi") if code.endswith("-nd") and it["status"] in (DONE, SKIPPED)
+                             else ("" if not code.endswith("-nd") else "-"),
             "sa_obligations": ("asl holida, litsenziya va manba ko'rsatilgan" if code.endswith("-sa")
-                               and it["status"] == DONE else ""),
+                               and it["status"] in (DONE, SKIPPED) and tg else ""),
             "library_id": li["id"] if li else "", "error": it.get("error") or "",
         })
-    done = [r for r in rows if r["import_status"] == DONE]
+    # yangi yuklanganlar va bazada bor-u qayta tekshirilganlar
+    done = [r for r in rows if r["import_status"] == DONE or
+            (r["import_status"] == SKIPPED and r["telegram_copy_sha1_match"] == "ha")]
     summary = {
         "total": len(rows), "done": len(done), "failed": sum(r["import_status"] == FAILED for r in rows),
         "skipped": sum(r["import_status"] == SKIPPED for r in rows),
+        "rechecked": sum(r["import_status"] == SKIPPED and r["telegram_copy_sha1_match"] == "ha" for r in rows),
         "license_ok": sum(r["license_url_http"] == 200 for r in done),
         "source_ok": sum(r["source_url_http"] == 200 for r in done),
         "tg_match": sum(r["telegram_copy_sha1_match"] == "ha" for r in done),
@@ -180,7 +183,8 @@ def compliance_text(job: dict, sm: dict) -> str:
     ok = "✅" if sm["ready_for_bulk"] else "⚠️"
     return "\n".join([
         f"📄 <b>Muvofiqlik hisoboti — import #{job['id']}</b>\n",
-        f"Treklar: {sm['total']} · ✅ {sm['done']} · ⏭ {sm['skipped']} · ❌ {sm['failed']}",
+        f"Treklar: {sm['total']} · ✅ tekshirildi {sm['done']} (shundan bazada bor edi: {sm['rechecked']}) · "
+        f"❌ {sm['failed']}",
         f"📜 Litsenziya sahifasi ochildi: {sm['license_ok']}/{sm['done']}",
         f"🌐 Manba sahifasi ochildi: {sm['source_ok']}/{sm['done']}",
         f"🔒 Telegram'dagi nusxa asl fayl bilan bir xil (sha1): {sm['tg_match']}/{sm['done']}"
@@ -249,7 +253,8 @@ HELP = (
     "<code>/vault_artist Ism</code>: standart ijrochi, <code>/vault_folder yo'l</code>: serverdagi papka.\n\n"
     "<b>5. Free Music Archive</b> (CC litsenziyali)\n"
     "<code>/fma</code>: sozlamalar, katalogni sanash, keyin import\n"
-    "<code>/fma_test</code>: 20 ta tasdiqlangan trek bilan test importi\n\n"
+    "<code>/fma_test</code>: 20 ta tasdiqlangan trek bilan test importi\n"
+    "<code>/fma_cleanup</code>: bazadagi tasdiqlanmagan FMA treklarini olib tashlash\n\n"
     "<code>/imports</code>: barcha import'lar ekrani\n\n"
     "<b>Boshqaruv:</b> <code>/import_status</code>, <code>/import_pause ID</code>, <code>/import_resume ID</code>, "
     "<code>/import_cancel ID</code>, <code>/import_finish ID</code>, <code>/import_failed ID</code>, "
@@ -665,6 +670,34 @@ def build_router(manager: ImportManager, is_admin: Callable[[int | None], bool])
         job = manager.create_fma_test_job(message.from_user.id, ids)
         await new_progress_message(message, job)
 
+    def fma_cleanup_list() -> list[tuple[dict, str]]:
+        """Bazadagi, lekin joriy tasdiqlangan ro'yxatda bo'lmagan FMA treklari (sabab bilan)."""
+        lib = manager.library
+        reasons = {int(r["fma_id"]): (r["status"], r["reason"]) for r in fma.iter_manifest(fma.MANIFEST)}
+        out = []
+        for it in lib.active():
+            if it.get("provider") != "fma" or not str(it.get("external_id", "")).isdigit():
+                continue
+            st, why = reasons.get(int(it["external_id"]), ("", "manifestda yo'q (NC yoki ruxsatsiz litsenziya)"))
+            if st != "verified":
+                out.append((it, why or st))
+        return out
+
+    @router.message(Command("fma_cleanup"), private)
+    async def cmd_fma_cleanup(message: Message) -> None:
+        if not await need_admin(message):
+            return
+        items = fma_cleanup_list()
+        if not items:
+            await message.answer("✅ Bazadagi barcha FMA treklari joriy tasdiqlangan ro'yxatda bor.")
+            return
+        lines = [f"⚠️ Bazada huquqi tasdiqlanmagan <b>{len(items)}</b> ta FMA treki bor:\n"]
+        lines += [f"#{it['id']} {esc(it['artist'])} — {esc(it['title'])}\n   <i>{esc(why)}</i>" for it, why in items[:30]]
+        lines.append("\nOlib tashlansa, ular qidiruvda chiqmaydi va kanaldagi postlari o'chiriladi.")
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text=f"🧹 {len(items)} tasini olib tashlash", callback_data="imp:cleanup:0")]])
+        await message.answer("\n".join(lines), reply_markup=kb)
+
     @router.message(Command("imports"), private)
     async def cmd_imports(message: Message) -> None:
         if not await need_admin(message):
@@ -688,6 +721,19 @@ def build_router(manager: ImportManager, is_admin: Callable[[int | None], bool])
             return
         manager.bind(cb.bot)
         _, action, job_id = cb.data.split(":", 2)
+        if action == "cleanup":
+            items = fma_cleanup_list()
+            lib = manager.library
+            for it, why in items:
+                await lib.remove(cb.bot, it)
+                try:
+                    await cb.bot.delete_message(lib.chat_id, it["msg_id"])
+                except Exception as e:  # noqa: BLE001
+                    log.warning("Kanal postini o'chirib bo'lmadi #%s: %s", it["id"], e)
+                log.info("Huquqi tasdiqlanmagan FMA treki olib tashlandi #%s: %s", it["id"], why)
+            await cb.answer(f"{len(items)} ta olib tashlandi")
+            await cb.message.answer(f"🧹 {len(items)} ta huquqi tasdiqlanmagan trek bazadan va kanaldan olib tashlandi.")
+            return
         if action == "fmacount":
             if manager.fma_job() is not None:
                 await cb.answer("FMA import allaqachon ochiq", show_alert=True)

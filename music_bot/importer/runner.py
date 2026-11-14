@@ -475,6 +475,37 @@ class ImportManager:
         buf = await self.bot.download(audio.file_id)
         return hashlib.sha1(buf.read()).hexdigest()
 
+    async def _recheck_existing(self, job: dict, item: dict, c, existing: dict) -> None:
+        """Avvalroq import qilingan FMA trekini qayta tekshiradi: Telegram'dagi nusxa sha1, URL'lar,
+        atribusiya maydonlari. Mos kelmasa — bazadan olib tashlanadi."""
+        lib = self.library
+        chk = {"source_sha1": bool(c.sha1), "existing": True}
+        settings = fma.Settings.from_dict(job["settings"])
+        if settings.mode == "test" or settings.verify_urls:
+            chk["license_http"] = await self._url_status(c.license.url)
+            chk["source_http"] = await self._url_status(c.source_url)
+        tg = None
+        if c.sha1 and existing.get("file_id") and (existing.get("file_size") or 0) <= 20 * 1024 * 1024:
+            try:
+                buf = await self.bot.download(existing["file_id"])
+                tg = hashlib.sha1(buf.read()).hexdigest() == c.sha1
+            except Exception as e:  # noqa: BLE001
+                log.warning("FMA #%s qayta tekshiruvda yuklab bo'lmadi: %s", c.fma_id, e)
+        chk["telegram_sha1"] = tg
+        chk["caption"] = True  # foydalanuvchiga yuborishda atribusiya bazadan qo'shiladi
+        item["chk"] = chk
+        if tg is False:
+            await lib.remove(self.bot, existing)
+            item.update(status=FAILED, error="bazadagi nusxa asl fayldan farq qiladi — olib tashlandi",
+                        permanent=True)
+            return
+        if chk.get("license_http") not in (None, 200, -1):
+            self._fail(job, item, f"litsenziya sahifasi ochilmadi (HTTP {chk['license_http']})")
+            return
+        await lib.update_item(self.bot, existing, c.library_extra() | {
+            "sha1": c.sha1, "unmodified": bool(tg), "import_job": existing.get("import_job")})
+        item.update(status=SKIPPED, error="bazada bor — qayta tekshirildi", lib_id=existing["id"])
+
     async def _process_fma(self, job: dict, item: dict) -> None:
         cands, audio, policy = self._fma[job["id"]]
         lib = self.library
@@ -490,7 +521,10 @@ class ImportManager:
         existing = lib.find_existing(provider="fma", external_id=str(c.fma_id), artist=c.artist,
                                      title=c.title, duration=c.duration)
         if existing is not None:
-            item.update(status=SKIPPED, error="bazada bor", lib_id=existing["id"])
+            if existing.get("provider") == "fma" and existing.get("external_id") == str(c.fma_id):
+                await self._recheck_existing(job, item, c, existing)
+            else:
+                item.update(status=SKIPPED, error="bazada bor", lib_id=existing["id"])
             return
         if lib.chat_id is None:
             job["status"] = PAUSED

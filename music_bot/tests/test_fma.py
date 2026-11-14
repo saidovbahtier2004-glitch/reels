@@ -512,10 +512,11 @@ async def ok_status(url):
 
 def run_test_job(bot, dp, s, m, remote_archive, extra=()):
     async def go():
+        before = len(s.of(SendAudio))
         await feed(bot, dp, private_text("/fma_test", user=ADMIN))
         job = m.fma_job()
         job["settings"]["audio"] = remote_archive
-        assert s.of(SendAudio) == []  # admin boshlamaguncha hech narsa yuklanmaydi
+        assert len(s.of(SendAudio)) == before  # admin boshlamaguncha hech narsa yuklanmaydi
         await feed(bot, dp, cb(f"imp:start:{job['id']}"))
         await m.wait(job["id"])
         await feed(bot, dp, *[cb(f"imp:{a}:{job['id']}") for a in extra])
@@ -598,3 +599,39 @@ def test_dead_license_url_blocks_upload(tg, audio_bytes, remote_archive, monkeyp
 def test_url_status_only_known_hosts(tg):
     bot, dp, s, lib, m = tg
     assert run(m._url_status("https://evil.example/x")) == -1 and run(m._url_status("")) == -1
+
+
+def test_rerun_rechecks_existing_tracks(tg, audio_bytes, remote_archive, monkeypatch, tmp_path):
+    bot, dp, s, lib, m = tg
+    make_manifest(audio_bytes, remote_archive, monkeypatch, tmp_path, batch=(3, 5, 10))
+    monkeypatch.setattr(m, "_url_status", ok_status)
+    run_test_job(bot, dp, s, m, remote_archive)
+    first = len([u for u in s.of(SendAudio) if u.chat_id == CHANNEL])
+    job2 = run_test_job(bot, dp, s, m, remote_archive, extra=("compliance",))
+    assert len([u for u in s.of(SendAudio) if u.chat_id == CHANNEL]) == first == 3  # qayta yuklanmadi
+    assert all(it["status"] == SKIPPED and it["chk"]["telegram_sha1"] is True and it["chk"]["existing"]
+               for it in job2["items"])
+    doc = [c for c in s.of(SendDocument) if c.document.filename.startswith("fma_compliance")][-1]
+    assert "bazada bor edi: 3" in doc.caption and "Qolgan katalog importi: <b>mumkin</b>" in doc.caption
+    assert lib.find_existing(provider="fma", external_id="5")["unmodified"] is True
+
+
+def test_fma_cleanup_removes_unverified_after_confirm(tg, audio_bytes, remote_archive, monkeypatch, tmp_path):
+    bot, dp, s, lib, m = tg
+    make_manifest(audio_bytes, remote_archive, monkeypatch, tmp_path, batch=(3,))
+    monkeypatch.setattr(m, "_url_status", ok_status)
+    run_test_job(bot, dp, s, m, remote_archive)
+    # avvalgi versiyada import qilingan, endi tasdiqlanmagan trek (13 = Sampling+)
+    lib.items.append({"id": len(lib.items) + 1, "title": "Sample", "artist": "Sam", "file_id": "OLD",
+                      "file_unique_id": "OLDU", "provider": "fma", "external_id": "13", "msg_id": 777,
+                      "key": "sam sample"})
+    lib._reindex()
+    run(feed(bot, dp, private_text("/fma_cleanup", user=ADMIN)))
+    assert "huquqi tasdiqlanmagan <b>1</b>" in s.texts() and lib.search("sample")  # hali o'chirilmagan
+    run(feed(bot, dp, cb("imp:cleanup:0", user=USER)))
+    assert lib.search("sample")  # oddiy foydalanuvchi o'chira olmaydi
+    run(feed(bot, dp, cb("imp:cleanup:0")))
+    assert lib.search("sample") == [] and lib.find_existing(provider="fma", external_id="3")
+    assert any(type(c).__name__ == "DeleteMessage" and c.message_id == 777 for c in s.calls)
+    run(feed(bot, dp, private_text("/fma_cleanup", user=ADMIN)))
+    assert "barcha FMA treklari joriy tasdiqlangan" in s.texts()
