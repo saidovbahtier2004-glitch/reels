@@ -8,6 +8,7 @@ Job turlari:
   csv_provider  — CSV'dagi treklar audiosi distributor API'sidan olinadi
   provider      — distributor katalogi to'liq sinxronlanadi (sahifalab, cursor bilan)
   vault         — DistroKid Vault backup'lari (ZIP / papka / fayllar) + ixtiyoriy CSV
+  fma           — Free Music Archive dataset'i: avval sanash (counting), keyin import
 
 Trek holatlari: waiting_file → pending → done | skipped | failed
 """
@@ -28,6 +29,8 @@ from aiogram.types import BufferedInputFile, Message
 from .models import AudioFile, TrackMeta
 from .providers import MusicProvider, ProviderError, SourceNotAllowed, create_provider
 from .text import norm
+from . import fma
+from .licenses import Policy
 from .vault import (ArchiveStorage, Matcher, ScannedFile, SourceCache, VaultError, build_track,
                     to_telegram_audio)
 
@@ -36,7 +39,8 @@ TZ = timezone(timedelta(hours=5))
 
 WAITING, PENDING, DONE, SKIPPED, FAILED = "waiting_file", "pending", "done", "skipped", "failed"
 COLLECTING, RUNNING, PAUSED, FINISHED, CANCELLED = "collecting", "running", "paused", "done", "cancelled"
-ACTIVE = (COLLECTING, RUNNING, PAUSED)
+COUNTING = "counting"
+ACTIVE = (COUNTING, COLLECTING, RUNNING, PAUSED)
 LOG_LIMIT = 30
 
 
@@ -215,6 +219,51 @@ class ImportManager:
                           status=PENDING, error=None)
         self.save(job)
 
+    # ---- Free Music Archive ----
+    def fma_job(self) -> dict | None:
+        for j in sorted(self.jobs.values(), key=lambda j: int(j["id"]), reverse=True):
+            if j["kind"] == "fma" and j["status"] in ACTIVE:
+                return j
+        return None
+
+    def create_fma_job(self, owner: int, settings: "fma.Settings") -> dict:
+        job = self.create_job("fma", [], provider="fma", owner=owner)
+        job.update(status=COUNTING, settings=settings.to_dict(), report=None, counted_rows=0)
+        self.save(job)
+        self._tasks[job["id"]] = asyncio.create_task(self._count(job))
+        return job
+
+    async def _count(self, job: dict) -> None:
+        """Katalogni sanaydi (alohida thread'da) va ekranni har bir necha soniyada yangilaydi."""
+        settings = fma.Settings.from_dict(job["settings"])
+
+        def on_progress(rep: "fma.CountReport") -> None:
+            job["counted_rows"] = rep.rows
+
+        task = asyncio.create_task(asyncio.to_thread(fma.count_catalog, settings, on_progress))
+        try:
+            while not task.done():
+                await asyncio.wait({task}, timeout=5)
+                if not task.done():
+                    await self._progress(job)
+            rep = task.result()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            job["status"] = PAUSED
+            self.note(job, f"sanashda xato: {e}")
+            log.exception("FMA katalogini sanab bo'lmadi")
+            self.save(job)
+            await self._progress(job)
+            return
+        job["report"] = rep.to_dict()
+        job["counted_rows"] = rep.rows
+        job["items"] = [{"n": i + 1, "fma_id": tid, "status": PENDING} for i, tid in enumerate(rep.eligible_ids)]
+        job["status"] = COLLECTING if job["status"] == COUNTING else job["status"]
+        log.info("FMA sanaldi: %s qator, %s yaroqli", rep.rows, rep.eligible)
+        self.save(job)
+        await self._progress(job)
+
     def start_vault(self, job: dict) -> bool:
         if job["status"] != COLLECTING or not any(it["status"] == PENDING for it in job["items"]):
             return False
@@ -271,6 +320,9 @@ class ImportManager:
 
     async def resume_all(self) -> list[str]:
         """Server qayta ishga tushganda 'running' job'larni davom ettiradi."""
+        for j in self.jobs.values():  # sanash yarim yo'lda qolgan bo'lsa — qaytadan sanaymiz
+            if j["status"] == COUNTING and not self.is_running(j["id"]) and self.bot is not None:
+                self._tasks[j["id"]] = asyncio.create_task(self._count(j))
         started = [j["id"] for j in self.jobs.values() if j["status"] == RUNNING and self.start(j["id"])]
         if started:
             log.info("Import job'lari davom ettirildi: %s", ", ".join(started))
@@ -294,6 +346,8 @@ class ImportManager:
         try:
             if job["kind"] in ("provider", "csv_provider"):
                 provider = self.provider_factory(job["provider"])
+            if job["kind"] == "fma":
+                await self._fma_open(job)
             while True:
                 await self._loop(job, provider)
                 # loop tugayotgan paytda yangi fayl kelgan bo'lsa — davom etamiz
@@ -316,6 +370,8 @@ class ImportManager:
                 await provider.close()
             if job["kind"] == "vault" and job["status"] in (FINISHED, CANCELLED):
                 self.cache.drop(job["id"])
+            if job["kind"] == "fma":
+                self._fma_close(job)
             await self._progress(job)
 
     async def _loop(self, job: dict, provider: MusicProvider | None) -> None:
@@ -364,7 +420,73 @@ class ImportManager:
         job["catalog_done"] = page.next_cursor is None
         self.save(job)
 
+    # ---- FMA import ----
+    async def _fma_open(self, job: dict) -> None:
+        settings = fma.Settings.from_dict(job["settings"])
+        ids = {it["fma_id"] for it in job["items"] if it["status"] == PENDING}
+        cands = await asyncio.to_thread(fma.load_candidates, settings, ids)
+        audio = await asyncio.to_thread(fma.AudioSource, fma.resolve(settings.audio))
+        self._fma = getattr(self, "_fma", {})
+        self._fma[job["id"]] = (cands, audio, Policy(commercial=settings.commercial))
+
+    def _fma_close(self, job: dict) -> None:
+        state = getattr(self, "_fma", {}).pop(job["id"], None)
+        if state:
+            state[1].close()
+
+    async def _process_fma(self, job: dict, item: dict) -> None:
+        cands, audio, policy = self._fma[job["id"]]
+        lib = self.library
+        c = cands.get(item["fma_id"])
+        if c is None:
+            item.update(status=FAILED, error="metadata'da topilmadi", permanent=True)
+            return
+        problem = policy.check(c.license, will_modify=False)  # siyosat o'zgargan bo'lsa ham qayta tekshiramiz
+        if problem:
+            item.update(status=FAILED, error=problem, permanent=True)
+            return
+        existing = lib.find_existing(provider="fma", external_id=str(c.fma_id), artist=c.artist,
+                                     title=c.title, duration=c.duration)
+        if existing is not None:
+            item.update(status=SKIPPED, error="bazada bor", lib_id=existing["id"])
+            return
+        if lib.chat_id is None:
+            job["status"] = PAUSED
+            self.note(job, "LIBRARY_CHANNEL_ID ulanmagan — job pauza qilindi")
+            return
+        try:
+            data = await asyncio.to_thread(audio.read, c.fma_id)
+            if len(data) > fma.MAX_UPLOAD:
+                item.update(status=FAILED, error="audio > 49 MB", permanent=True)
+                return
+            sha = hashlib.sha256(data).hexdigest()
+            dup = lib.by_sha.get(sha)
+            if dup is not None:
+                item.update(status=SKIPPED, error="bazada bor (bir xil fayl)", lib_id=dup["id"])
+                return
+            track = TrackMeta(title=c.title, artist=c.artist, license_id=c.license.short, duration=c.duration)
+            name = f"{c.artist} - {c.title}.mp3".replace("/", "_")[:120]
+            async with self._upload_lock:
+                # Fayl o'zgartirilmaydi (CC BY-ND talabi): aynan MP3 baytlari yuboriladi
+                msg = await self._upload(track, file_id=None, audio=AudioFile(data, name))
+                added = await lib.add(self.bot, msg, extra=c.library_extra() | {"sha256": sha,
+                                                                               "import_job": job["id"]})
+                await asyncio.sleep(self.delay)
+            if added is None:
+                item.update(status=SKIPPED, error="bazada bor (bir xil fayl)")
+            else:
+                item.update(status=DONE, lib_id=added["id"])
+                item.pop("error", None)
+        except FileNotFoundError:
+            item.update(status=FAILED, error="audio fayl yo'q", permanent=True)
+        except Exception as e:  # noqa: BLE001
+            log.exception("FMA #%s import xatosi", item["fma_id"])
+            self._fail(job, item, f"{type(e).__name__}: {e}")
+
     async def _process(self, job: dict, item: dict, provider: MusicProvider | None) -> None:
+        if job["kind"] == "fma":
+            await self._process_fma(job, item)
+            return
         track = TrackMeta.from_dict(item["track"])
         lib = self.library
         problem = track.license_problem(date.today())
@@ -433,7 +555,9 @@ class ImportManager:
         if permanent or item["attempts"] >= self.max_attempts:
             item["status"] = FAILED
             item["permanent"] = permanent
-            self.note(job, f"#{item['n']} {item['track'].get('artist')} — {item['track'].get('title')}: {error}")
+            tr = item.get("track") or {}
+            label = f"{tr.get('artist')} — {tr.get('title')}" if tr else f"FMA #{item.get('fma_id')}"
+            self.note(job, f"#{item['n']} {label}: {error}")
 
     async def _upload(self, track: TrackMeta, *, file_id: str | None, audio: AudioFile | None) -> Message:
         media = file_id or BufferedInputFile(audio.data, audio.filename)

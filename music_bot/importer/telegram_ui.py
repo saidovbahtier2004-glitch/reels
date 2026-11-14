@@ -25,20 +25,49 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from .csv_import import parse_csv
 from .vault import MAX_UPLOAD_BYTES, VaultError, safe_folder, scan_folder, scan_zip
 from .providers import PROVIDERS, ProviderConfig, provider_status
-from .runner import (ACTIVE, CANCELLED, COLLECTING, DONE, FAILED, FINISHED, PAUSED, PENDING, RUNNING,
+from . import fma
+from .runner import (ACTIVE, CANCELLED, COLLECTING, COUNTING, DONE, FAILED, FINISHED, PAUSED, PENDING, RUNNING,
                      SKIPPED, WAITING, ImportManager, counts)
 
 log = logging.getLogger("music_bot.importer")
 
 KIND_NAMES = {"files": "fayllar", "csv_provider": "CSV + provider", "provider": "katalog sinxroni",
-              "vault": "DistroKid Vault"}
+              "vault": "DistroKid Vault", "fma": "Free Music Archive"}
 TG_DOWNLOAD_LIMIT = 20 * 1024 * 1024  # bot API orqali yuklab olish limiti
-STATUS_NAMES = {COLLECTING: "📎 fayllar kutilmoqda", RUNNING: "▶️ ishlayapti", PAUSED: "⏸ pauza",
+STATUS_NAMES = {COUNTING: "🔢 katalog sanalmoqda", COLLECTING: "📎 fayllar kutilmoqda", RUNNING: "▶️ ishlayapti", PAUSED: "⏸ pauza",
                 FINISHED: "✅ tugadi", CANCELLED: "🚫 bekor qilindi"}
 
 
 def esc(t) -> str:
     return html.escape(str(t or ""), quote=False)
+
+
+def fma_report_text(job: dict) -> list[str]:
+    st = job.get("settings", {})
+    target = st.get("target", 50_000)
+    rep = job.get("report")
+    mode = "tijoriy (NC chiqarib tashlangan)" if st.get("commercial", True) else "notijoriy"
+    lines = [f"⚖️ Rejim: {mode}", f"🎼 Janrlar: {', '.join(st.get('genres') or ['hammasi'])}"]
+    if st.get("languages"):
+        lines.append(f"🌐 Til filtri: {', '.join(st['languages'])}")
+    if rep is None:
+        lines.append(f"🔢 Sanalgan qatorlar: {job.get('counted_rows', 0):,}".replace(",", " "))
+        lines.append(f"🎯 Maqsad {target:,}: hali sanalmagan".replace(",", " "))
+        return lines
+    el = rep["eligible"]
+    sp = lambda n: f"{n:,}".replace(",", " ")  # noqa: E731
+    lines.append(f"📚 Katalogdagi treklar: {sp(rep['rows'])}   ✅ Yaroqli: <b>{sp(el)}</b>")
+    if el >= target:
+        lines.append(f"🎯 Maqsad {sp(target)}: <b>yetadi</b>")
+    else:
+        lines.append(f"🎯 Maqsad {sp(target)}: <b>yetmaydi</b> — yana {sp(target - el)} ta yaroqli trek kerak")
+    lines.append("📜 Litsenziyalar: " + ", ".join(f"{k} {sp(v)}" for k, v in list(rep["licenses"].items())[:6]))
+    lines.append("🎼 Janrlar: " + ", ".join(f"{k} {sp(v)}" for k, v in rep["genres"].items()))
+    langs = rep["languages"]
+    wanted = ", ".join(f"{name} {sp(langs.get(code, 0))}" for code, name in fma.LANGUAGES.items())
+    lines.append(f"🌐 Tillar: {wanted}, belgilanmagan {sp(langs.get('—', 0))}")
+    lines.append("🚫 Rad etilgan: " + ", ".join(f"{k} {sp(v)}" for k, v in list(rep["reasons"].items())[:6]))
+    return lines
 
 
 def progress_text(job: dict, delay: float = 3.5) -> str:
@@ -74,6 +103,10 @@ def progress_text(job: dict, delay: float = 3.5) -> str:
             lines.append(f"👤 Standart ijrochi: {esc(job['default_artist'])}")
     if c[PENDING] and job["status"] == RUNNING:
         lines.append(f"🕒 Taxminan {max(1, round(c[PENDING] * delay / 60))} daqiqa qoldi")
+    if job["kind"] == "fma":
+        lines += fma_report_text(job)
+        if job["status"] == COLLECTING:
+            lines.append("\nFaqat yaroqli treklar import qilinadi. Boshlash: ▶️ <b>Importni boshlash</b>")
     if job["kind"] == "provider" and not job.get("catalog_done"):
         lines.append("📚 Katalog hali to'liq o'qilmagan")
     if vault and job["status"] == COLLECTING:
@@ -105,13 +138,13 @@ def screen_kb(job: dict) -> InlineKeyboardMarkup:
     c = counts(job)
     rows = []
     st = job["status"]
-    if st == COLLECTING and job["kind"] == "vault":
+    if st == COLLECTING and job["kind"] in ("vault", "fma") and c[PENDING]:
         rows.append([b("▶️ Importni boshlash", "start")])
     if st == RUNNING:
         rows.append([b("⏸ Pauza", "pause"), b("🔄 Yangilash", "refresh")])
     elif st == PAUSED:
         rows.append([b("▶️ Davom ettirish", "resume"), b("🔄 Yangilash", "refresh")])
-    elif st == COLLECTING:
+    elif st in (COLLECTING, COUNTING):
         rows.append([b("🔄 Yangilash", "refresh")])
     extra = []
     if c[FAILED]:
@@ -139,6 +172,8 @@ HELP = (
     "<b>4. DistroKid Vault backup</b> (o'zingizning original yozuvlaringiz)\n"
     "<code>/vault</code>: sessiya ochiladi. Keyin ZIP (har biri ≤20 MB), audio fayllar va ixtiyoriy CSV yuboring.\n"
     "<code>/vault_artist Ism</code>: standart ijrochi, <code>/vault_folder yo'l</code>: serverdagi papka.\n\n"
+    "<b>5. Free Music Archive</b> (CC litsenziyali)\n"
+    "<code>/fma</code>: sozlamalar, katalogni sanash, keyin import\n\n"
     "<code>/imports</code>: barcha import'lar ekrani\n\n"
     "<b>Boshqaruv:</b> <code>/import_status</code>, <code>/import_pause ID</code>, <code>/import_resume ID</code>, "
     "<code>/import_cancel ID</code>, <code>/import_finish ID</code>, <code>/import_failed ID</code>, "
@@ -504,6 +539,38 @@ def build_router(manager: ImportManager, is_admin: Callable[[int | None], bool])
         lines.append(f"\nQayta urinish: <code>/import_retry {job['id']}</code>")
         await message.answer("\n".join(lines))
 
+    @router.message(Command("fma"), private)
+    async def cmd_fma(message: Message) -> None:
+        if not await need_admin(message):
+            return
+        st = fma.Settings.from_env()
+        from .vault import import_root
+        root = import_root()
+        checks = []
+        for label, rel in (("Metadata (tracks.csv)", st.metadata), ("Audio (fma_full)", st.audio)):
+            try:
+                fma.resolve(rel)
+                checks.append(f"✅ {label}: <code>{esc(rel)}</code>")
+            except Exception as e:  # noqa: BLE001
+                checks.append(f"❌ {label}: <code>{esc(rel)}</code> — {esc(e)}")
+        job = manager.fma_job()
+        kb = None
+        if job is None:
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🔢 Katalogni sanash", callback_data="imp:fmacount:0")]])
+        await message.answer(
+            "🎼 <b>Free Music Archive</b>\n\n"
+            "Manba: rasmiy FMA dataset (github.com/mdeff/fma, 2017 snapshot). FMA saytiga ulanilmaydi.\n"
+            "Har bir trek o'z litsenziyasi bo'yicha tekshiriladi: CC0, CC BY, CC BY-SA va o'zgartirilmagan "
+            "CC BY-ND qabul qilinadi. Bot tijoriy bo'lsa, NC treklar chiqarib tashlanadi. "
+            "Muallif, manba va litsenziya har bir trek bilan saqlanadi va yuborilganda ko'rsatiladi.\n\n"
+            f"IMPORT_ROOT: <code>{esc(root) if root else 'sozlanmagan'}</code>\n" + "\n".join(checks) +
+            f"\nTijoriy rejim: {'ha' if st.commercial else 'yoq'}   Maqsad: {st.target}\n\n"
+            + ("Avval katalog sanaladi, import faqat siz tasdiqlagach boshlanadi." if job is None
+               else f"Ochiq import: #{job['id']} — /imports"), reply_markup=kb)
+        if job is not None:
+            await new_progress_message(message, job)
+
     @router.message(Command("imports"), private)
     async def cmd_imports(message: Message) -> None:
         if not await need_admin(message):
@@ -527,6 +594,20 @@ def build_router(manager: ImportManager, is_admin: Callable[[int | None], bool])
             return
         manager.bind(cb.bot)
         _, action, job_id = cb.data.split(":", 2)
+        if action == "fmacount":
+            if manager.fma_job() is not None:
+                await cb.answer("FMA import allaqachon ochiq", show_alert=True)
+                return
+            settings = fma.Settings.from_env()
+            try:
+                fma.resolve(settings.metadata), fma.resolve(settings.audio)
+            except Exception as e:  # noqa: BLE001
+                await cb.answer(f"Sozlanmagan: {e}"[:190], show_alert=True)
+                return
+            job = manager.create_fma_job(cb.from_user.id, settings)
+            await cb.answer("Sanash boshlandi")
+            await new_progress_message(cb.message, job)
+            return
         if action == "attest":
             job = manager.vault_job() or manager.create_vault_job(cb.from_user.id)
             await cb.answer("Tasdiqlandi")
@@ -556,7 +637,9 @@ def build_router(manager: ImportManager, is_admin: Callable[[int | None], bool])
             lines = [f"{'❌ Xatolar' if want == FAILED else '🏷 Mos kelmaganlar'} — import #{job['id']}: "
                      f"{len(items)}\n"]
             for it in items[:30]:
-                name = it.get("scan", {}).get("name") or f"{it['track'].get('artist')} — {it['track'].get('title')}"
+                tr = it.get("track") or {}
+                name = (it.get("scan", {}).get("name") or (f"{tr.get('artist')} — {tr.get('title')}" if tr
+                        else f"FMA #{it.get('fma_id')}"))
                 lines.append(f"#{it['n']} {esc(name)}: <i>{esc(it.get('error'))}</i>")
             if want == WAITING and job["kind"] == "vault":
                 lines.append("\nCSV yuboring yoki <code>/vault_artist Ism</code> bilan standart ijrochini bering.")

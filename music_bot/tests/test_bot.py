@@ -19,7 +19,8 @@ from aiogram.methods import (
     AnswerCallbackQuery, EditMessageMedia, GetFile, PinChatMessage, SendAudio,
     SendDocument, SendMessage,
 )
-from aiogram.types import Audio, Chat, File, InputFile, Message, Update
+from aiogram.methods import GetChat
+from aiogram.types import Audio, Chat, ChatFullInfo, Document, File, InputFile, Message, Update
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import bot as botmod  # noqa: E402
@@ -35,6 +36,8 @@ class FakeSession(BaseSession):
         self.calls: list = []
         self.next_id = 1000
         self.files: dict[str, bytes] = {}  # file_id -> yuklab olinadigan baytlar
+        self.docs: dict[int, Message] = {}   # kanaldagi hujjat xabarlari (msg_id -> Message)
+        self.pinned: int | None = None
 
     async def close(self) -> None:
         pass
@@ -50,8 +53,28 @@ class FakeSession(BaseSession):
             if method.file_id.startswith("BIG"):
                 raise TelegramBadRequest(method=method, message="Bad Request: file is too big")
             return File(file_id=method.file_id, file_unique_id="u", file_path=method.file_id)
-        if isinstance(method, (PinChatMessage, AnswerCallbackQuery)):
+        if isinstance(method, PinChatMessage):
+            self.pinned = method.message_id
             return True
+        if isinstance(method, AnswerCallbackQuery):
+            return True
+        if isinstance(method, GetChat):
+            pm = self.docs.get(self.pinned) if self.pinned else None
+            return ChatFullInfo.model_construct(id=method.chat_id, type="channel", pinned_message=pm)
+        if isinstance(method, (SendDocument, EditMessageMedia)):
+            doc = method.document if isinstance(method, SendDocument) else method.media.media
+            if isinstance(method, SendDocument):
+                self.next_id += 1
+                mid = self.next_id
+            else:
+                mid = method.message_id
+            self.next_id += 1
+            fid = f"DOC{self.next_id}"
+            self.files[fid] = doc.data
+            m = Message(message_id=mid, date=dt.datetime.now(), chat=Chat(id=method.chat_id, type="channel"),
+                        document=Document(file_id=fid, file_unique_id="u" + fid, file_name=doc.filename)).as_(bot)
+            self.docs[mid] = m
+            return m
         if isinstance(method, SendAudio):
             self.next_id += 1
             if isinstance(method.audio, InputFile):
@@ -186,9 +209,64 @@ def test_other_channels_ignored(env):
 def test_bulk_upload_saves_index_once_then_edits(env):
     bot, dp, s, lib = env
     run(feed(bot, dp, *[channel_audio(10 + i, f"U{i}", title=f"Song {i}") for i in range(5)]))
-    assert len(s.of(SendDocument)) == 1 and len(s.of(PinChatMessage)) == 1
+    # bitta yozuv: 1 bo'lak + manifest (pin), job'lar bo'sh — yuborilmaydi
+    names = sorted(c.document.filename for c in s.of(SendDocument))
+    assert names == ["library.json", "library_part_1.json"] and len(s.of(PinChatMessage)) == 1
     run(feed(bot, dp, channel_audio(50, "U50", title="Yana")))
-    assert len(s.of(SendDocument)) == 1 and len(s.of(EditMessageMedia)) == 1
+    assert len(s.of(SendDocument)) == 2  # yangi hujjat yo'q, joyida tahrirlanadi
+    edited = sorted(c.media.media.filename for c in s.of(EditMessageMedia))
+    assert edited == ["library.json", "library_part_1.json"] and len(s.of(PinChatMessage)) == 1
+
+
+def test_sharded_index_roundtrip_and_partial_writes(env, monkeypatch):
+    bot, dp, s, lib = env
+    monkeypatch.setattr(botmod, "SHARD_SIZE", 3)
+    run(feed(bot, dp, *[channel_audio(100 + i, f"S{i}", title=f"Track {i}", performer="A") for i in range(7)]))
+    parts = sorted(c.document.filename for c in s.of(SendDocument))
+    assert parts == ["library.json", "library_part_1.json", "library_part_2.json", "library_part_3.json"]
+    before = len(s.of(EditMessageMedia))
+    run(feed(bot, dp, channel_audio(200, "S99", title="Oxirgi", performer="A")))  # 3-bo'lakka tushadi
+    touched = [c.media.media.filename for c in s.of(EditMessageMedia)[before:]]
+    assert sorted(touched) == ["library.json", "library_part_3.json"]  # 1-2 bo'laklar qayta yozilmadi
+
+    # "server qayta ishga tushdi": kanaldan to'liq qayta yuklash
+    lib.jobs["1"] = {"id": "1", "kind": "files", "status": "done", "items": []}
+
+    async def save_jobs():
+        lib.schedule_save(bot)
+        await asyncio.sleep(0.05)
+    run(save_jobs())
+    lib2 = botmod.Library()
+    lib2.channel = str(CHANNEL)
+    run(lib2.load(bot))
+    assert [it["title"] for it in lib2.active()] == [f"Track {i}" for i in range(7)] + ["Oxirgi"]
+    assert lib2.jobs["1"]["kind"] == "files" and lib2.get(8)["file_id"] == "FID_S99"
+    assert lib2._dirty_shards == set()  # yuklangandan keyin hech narsa qayta yozilmaydi
+
+
+def test_v2_index_migrates_to_shards(env, monkeypatch):
+    bot, dp, s, lib = env
+    import json as _json
+    old = {"version": 2, "items": [{"id": 1, "title": "Eski", "artist": "X", "file_id": "F1",
+                                    "file_unique_id": "U1"}], "jobs": {}}
+    s.files["OLD"] = _json.dumps(old).encode()
+    s.next_id += 1
+    s.docs[s.next_id] = botmod.Message(message_id=s.next_id, date=1700000000,
+                                       chat={"id": CHANNEL, "type": "channel"},
+                                       document={"file_id": "OLD", "file_unique_id": "uold",
+                                                 "file_name": "library.json"}).as_(bot)
+    s.pinned = s.next_id
+    lib2 = botmod.Library()
+    lib2.channel = str(CHANNEL)
+
+    async def go():
+        await lib2.load(bot)
+        await asyncio.sleep(botmod.SAVE_DELAY + 0.1)
+    monkeypatch.setattr(botmod, "SAVE_DELAY", 0.01)
+    run(go())
+    assert lib2.get(1)["title"] == "Eski"
+    manifest = _json.loads(s.files[s.docs[s.pinned].document.file_id])
+    assert manifest["version"] == 3 and len(manifest["shards"]) == 1 and s.pinned == lib2.index_msg_id
 
 
 def test_index_roundtrip_and_v1_migration(env):

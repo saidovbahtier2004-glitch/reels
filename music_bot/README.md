@@ -151,6 +151,50 @@ Tugmalari: ⏸ Pauza, ▶️ Davom, 🔄 Yangilash, 📋 Xatolar, 🏷 Mos kelma
 **Resume:** job holati indeksda saqlanadi. Server qayta yonsa, ZIP Telegram'dan `file_id` orqali qayta yuklanadi
 va import qolgan joyidan davom etadi. Yuklangan treklar qayta yuklanmaydi.
 
+## Free Music Archive (CC litsenziyali katalog)
+
+**Manba:** rasmiy [FMA dataset](https://github.com/mdeff/fma) (2017 snapshot, 106 574 trek).
+`fma_metadata.zip` ichidagi `tracks.csv` va `fma_full.zip` (kesilmagan MP3, 879 GiB) ishlatiladi.
+Bot FMA saytiga ham, API'siga ham murojaat qilmaydi. Fayllarni server egasi dataset'ning rasmiy manzilidan yuklab,
+`IMPORT_ROOT` ichiga qo'yadi. `fma_full.zip`'ni ochish shart emas.
+
+```
+IMPORT_ROOT=/data/imports
+FMA_METADATA=fma_metadata/tracks.csv   # IMPORT_ROOT'ga nisbatan
+FMA_AUDIO=fma_full                      # yoki fma_full.zip
+BOT_COMMERCIAL=1                        # standart: bot reklamali => NC treklar chiqarib tashlanadi
+FMA_GENRES=Pop,Hip-Hop,Soul-RnB,Rock,Electronic,Jazz,Classical,Folk,International   # standart; "all" = hammasi
+FMA_LANGUAGES=                          # bo'sh = filtrsiz; masalan "uz,ru,en"
+FMA_TARGET=50000
+```
+
+**Litsenziya siyosati** (`importer/licenses.py`). Har bir trek alohida tekshiriladi:
+- ✅ CC0, Public Domain Mark, CC BY, CC BY-SA
+- ✅ CC BY-ND, faqat o'zgartirilmagan holda. FMA MP3'lari aynan o'zi yuboriladi: kesilmaydi, qayta kodlanmaydi.
+- ❌ NonCommercial. Bot tijoriy bo'lsa (`BOT_COMMERCIAL=1`) rad etiladi.
+- ❌ Sampling+, FMA-Limited, "All rights reserved", noma'lum yoki bo'sh litsenziya.
+- ❌ audio fayli yo'q yoki 49 MB dan katta (o'zgartirmasdan yuborib bo'lmaydi).
+
+**Muallifni ko'rsatish.** Har bir trek bilan bazaga quyidagilar yoziladi: muallif, `artist_url`, litsenziya nomi, `license_url`,
+`license_code`, manba (Free Music Archive, trek ID, dataset URL), til va janr. Foydalanuvchiga yuborilganda caption'da
+«Nom» — Ijrochi. Manba. Litsenziya (URL) matni ko'rsatiladi.
+`tracks.csv`'da trek sahifasining URL'i yo'q, uni taxmin qilib qo'ymaymiz. Port (yurisdiksiya) noma'lum bo'lsa,
+litsenziya URL'i bo'sh qoladi va faqat nomi ko'rsatiladi.
+
+**Jarayon** (`/fma`):
+1. **🔢 Katalogni sanash.** Butun `tracks.csv` o'qiladi, hech narsa yuklanmaydi. Hisobotda quyidagilar bo'ladi: nechta yaroqli trek bor,
+   50 000 maqsadga **yetadimi yoki yo'qmi**, litsenziya, janr va til bo'yicha taqsimot, rad etish sabablari.
+2. **▶️ Importni boshlash.** Faqat yaroqli treklar, batch bilan, pauza/davom qilish mumkin. Takrorlar FMA ID,
+   sha256 va ijrochi+nom+davomiylik bo'yicha aniqlanadi. Server qayta yonsa, import o'zi davom etadi.
+
+**Masshtab va cheklovlar:**
+- Indeks v3: manifest va 2000 tadan bo'laklar. 50 000 trek ≈ 25 bo'lak × ~2 MB. Saqlashda faqat o'zgargan bo'lak yoziladi.
+- Telegram kanalga ~20 xabar/daqiqa: 50 000 trek ≈ **55–60 soat** uzluksiz yuklash.
+- `fma_full` 879 GiB. Uni saqlash uchun katta diskli server (VPS) kerak, Render bepul tarifi yetmaydi. Bunda bot
+  o'sha serverda ishlashi kerak: indeksni bitta jarayon yozadi.
+- 50 000 trekli indeks xotirada ~200–300 MB egallaydi. Render bepul tarifida bu 512 MB limitga yaqin.
+- Dataset 2017 yilgi. CC litsenziyalari qaytarib olinmaydi, lekin muhim treklarni joriy FMA sahifasida tekshirib ko'rish tavsiya etiladi.
+
 ## Testlar
 
 ```bash

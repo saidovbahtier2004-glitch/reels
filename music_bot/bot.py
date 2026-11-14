@@ -67,9 +67,10 @@ last_query: dict[int, str] = {}
 # --------------------------------------------------------------------------- #
 INDEX_NAME = "library.json"
 INDEX_CAPTION = "📚 Kutubxona indeksi — o'chirmang"
-INDEX_VERSION = 2
+INDEX_VERSION = 3  # v3: manifest + bo'laklar (shard), katta kataloglar uchun
+SHARD_SIZE = 2000   # bitta bo'lakda ~1.5 MB — bot API yuklab olish limiti (20 MB) dan ancha past
 TZ = timezone(timedelta(hours=5))  # Toshkent vaqti
-SAVE_DELAY = 3.0  # bir nechta audio birdan tashlansa, indeks bir marta yoziladi
+SAVE_DELAY = float(os.getenv("INDEX_SAVE_DELAY", "3"))  # bir nechta o'zgarish bitta yozuvga yig'iladi
 
 
 def now_iso() -> str:
@@ -122,6 +123,12 @@ class Library:
         self.lock = asyncio.Lock()
         self._dirty = False
         self._save_task: asyncio.Task | None = None
+        # v3 saqlash holati
+        self.shards: list[dict] = []          # [{"msg": id, "file_id": ...}]
+        self.jobs_doc: dict | None = None     # {"msg": id, "file_id": ...}
+        self._dirty_shards: set[int] = set()
+        self._jobs_hash: str | None = None
+        self._manifest_hash: str | None = None
 
     # ---- yuklash / saqlash ----
     async def load(self, bot: Bot) -> None:
@@ -135,11 +142,33 @@ class Library:
             pm = chat.pinned_message
             if pm and pm.document and pm.document.file_name == INDEX_NAME:
                 buf = await bot.download(pm.document.file_id)
-                self.load_data(json.loads(buf.read().decode()))
+                data = json.loads(buf.read().decode())
                 self.index_msg_id = pm.message_id
+                if "shards" in data:
+                    await self._load_v3(bot, data)
+                else:  # v1/v2: hammasi bitta faylda -> keyingi saqlashda bo'laklarga o'tadi
+                    self.load_data(data)
+                    log.info("Indeks v%s formatida — v3 ga o'tkaziladi", data.get("version", 1))
+                    self.schedule_save(bot)
             log.info("Kutubxona yuklandi: %s ta qo'shiq", len(self.active()))
         except Exception:
             log.exception("Kutubxona kanalini o'qib bo'lmadi (bot kanalda admin ekanini tekshiring)")
+
+    async def _load_v3(self, bot: Bot, manifest: dict) -> None:
+        items: list[dict] = []
+        for sh in manifest["shards"]:
+            buf = await bot.download(sh["file_id"])
+            items += json.loads(buf.read().decode())["items"]
+        jobs = {}
+        if manifest.get("jobs"):
+            buf = await bot.download(manifest["jobs"]["file_id"])
+            jobs = json.loads(buf.read().decode())["jobs"]
+        self.load_data({"items": items, "jobs": jobs})
+        self.shards = [dict(sh) for sh in manifest["shards"]]
+        self.jobs_doc = dict(manifest["jobs"]) if manifest.get("jobs") else None
+        self._dirty_shards.clear()
+        self._jobs_hash = self._hash(self._jobs_blob())
+        self._manifest_hash = self._hash(self._manifest_blob())
 
     def load_data(self, data: dict) -> None:
         """JSON'dan yuklaydi va eski (v1) yozuvlarni yangi formatga o'tkazadi."""
@@ -159,6 +188,7 @@ class Library:
             it["key"] = norm(f"{it['artist']} {it['title']} {it.get('file_name', '')}")
             self.items.append(it)
         self._reindex()
+        self._dirty_shards = set(range(self._shard_count()))
 
     def _reindex(self) -> None:
         self.by_uid = {it["file_unique_id"]: it for it in self.items
@@ -170,21 +200,71 @@ class Library:
         return json.dumps({"version": INDEX_VERSION, "items": items, "jobs": self.jobs},
                           ensure_ascii=False).encode()
 
-    async def _write(self, bot: Bot) -> None:
-        doc = BufferedInputFile(self.dump(), INDEX_NAME)
-        if self.index_msg_id:
+    # ---- v3: bo'laklab saqlash ----
+    @staticmethod
+    def _hash(blob: bytes) -> str:
+        import hashlib
+        return hashlib.sha1(blob).hexdigest()
+
+    def _shard_count(self) -> int:
+        return (len(self.items) + SHARD_SIZE - 1) // SHARD_SIZE
+
+    def _shard_of(self, item: dict) -> int:
+        return (item["id"] - 1) // SHARD_SIZE
+
+    def _shard_blob(self, i: int) -> bytes:
+        part = self.items[i * SHARD_SIZE:(i + 1) * SHARD_SIZE]
+        items = [{k: v for k, v in it.items() if k != "key"} for it in part]
+        return json.dumps({"shard": i, "items": items}, ensure_ascii=False).encode()
+
+    def _jobs_blob(self) -> bytes:
+        return json.dumps({"jobs": self.jobs}, ensure_ascii=False, separators=(",", ":")).encode()
+
+    def _manifest_blob(self) -> bytes:
+        return json.dumps({"version": INDEX_VERSION, "count": len(self.items), "shard_size": SHARD_SIZE,
+                           "shards": self.shards, "jobs": self.jobs_doc}).encode()
+
+    async def _put_doc(self, bot: Bot, ref: dict | None, blob: bytes, name: str, caption: str) -> dict:
+        """Hujjatni joyida yangilaydi (edit) yoki yangisini yuboradi. {"msg", "file_id"} qaytaradi."""
+        if ref and ref.get("msg"):
             try:
-                await bot.edit_message_media(
-                    chat_id=self.chat_id, message_id=self.index_msg_id,
-                    media=InputMediaDocument(media=doc, caption=INDEX_CAPTION),
-                )
-                return
-            except Exception:
-                log.exception("Indeksni yangilab bo'lmadi, yangisini yaratamiz")
-                doc = BufferedInputFile(self.dump(), INDEX_NAME)
-        msg = await bot.send_document(self.chat_id, doc, caption=INDEX_CAPTION, disable_notification=True)
-        self.index_msg_id = msg.message_id
-        await bot.pin_chat_message(self.chat_id, msg.message_id, disable_notification=True)
+                msg = await bot.edit_message_media(
+                    chat_id=self.chat_id, message_id=ref["msg"],
+                    media=InputMediaDocument(media=BufferedInputFile(blob, name), caption=caption))
+                if isinstance(msg, Message) and msg.document:
+                    return {"msg": msg.message_id, "file_id": msg.document.file_id}
+            except Exception as e:
+                if "not modified" in str(e):
+                    return ref
+                log.warning("%s'ni yangilab bo'lmadi (%s), yangisi yuboriladi", name, e)
+        msg = await bot.send_document(self.chat_id, BufferedInputFile(blob, name), caption=caption,
+                                      disable_notification=True)
+        return {"msg": msg.message_id, "file_id": msg.document.file_id}
+
+    async def _write(self, bot: Bot) -> None:
+        n = self._shard_count()
+        for i in sorted(x for x in self._dirty_shards if x < n):
+            ref = self.shards[i] if i < len(self.shards) else None
+            new = await self._put_doc(bot, ref, self._shard_blob(i), f"library_part_{i + 1}.json",
+                                      f"📚 Indeks bo'lagi {i + 1} — o'chirmang")
+            if i < len(self.shards):
+                self.shards[i] = new
+            else:
+                self.shards.append(new)
+            self._dirty_shards.discard(i)
+        jobs_blob = self._jobs_blob()
+        if (self.jobs or self.jobs_doc) and self._hash(jobs_blob) != self._jobs_hash:
+            self.jobs_doc = await self._put_doc(bot, self.jobs_doc, jobs_blob, "library_jobs.json",
+                                                "📦 Import holati — o'chirmang")
+            self._jobs_hash = self._hash(jobs_blob)
+        manifest = self._manifest_blob()
+        if self._hash(manifest) != self._manifest_hash:
+            ref = {"msg": self.index_msg_id} if self.index_msg_id else None
+            new = await self._put_doc(bot, ref, manifest, INDEX_NAME, INDEX_CAPTION)
+            if new["msg"] != self.index_msg_id:
+                self.index_msg_id = new["msg"]
+                await bot.pin_chat_message(self.chat_id, new["msg"], disable_notification=True)
+            self._manifest_hash = self._hash(manifest)
 
     def schedule_save(self, bot: Bot) -> None:
         self._dirty = True
@@ -342,6 +422,7 @@ class Library:
             self.by_uid[item["file_unique_id"]] = item
             if item.get("sha256"):
                 self.by_sha[item["sha256"]] = item
+            self._dirty_shards.add(self._shard_of(item))
         log.info("Kutubxonaga qo'shildi #%s: %s — %s", item["id"], artist, title)
         self.schedule_save(bot)
         return item
@@ -350,6 +431,7 @@ class Library:
         async with self.lock:
             item["deleted"] = True
             self._reindex()
+            self._dirty_shards.add(self._shard_of(item))
         log.info("Kutubxonadan o'chirildi #%s: %s — %s", item["id"], item["artist"], item["title"])
         self.schedule_save(bot)
 
@@ -519,6 +601,8 @@ async def show_results(message: Message, query: str, index: int = 0, edit: bool 
 async def send_library_item(message: Message, it: dict) -> None:
     """Bazadagi qo'shiqni serverga yuklamasdan, file_id orqali yuboradi."""
     caption = f"🎵 <b>{esc(it['artist'])} — {esc(it['title'])}</b>"
+    if it.get("attribution"):  # CC litsenziyali treklar: muallif, manba, litsenziya
+        caption += f"\n\n<i>{esc(it['attribution'])}</i>"
     try:
         await message.answer_audio(it["file_id"], caption=caption)
     except Exception:
