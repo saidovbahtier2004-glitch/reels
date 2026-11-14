@@ -181,6 +181,13 @@ FMA_TARGET=50000
 `tracks.csv`'da trek sahifasining URL'i yo'q, uni taxmin qilib qo'ymaymiz. Port (yurisdiksiya) noma'lum bo'lsa,
 litsenziya URL'i bo'sh qoladi va faqat nomi ko'rsatiladi.
 
+**Metadata hisoboti (audio'siz):**
+```bash
+python -m importer.fma_report /yo'l/fma_metadata --out fma_report   # --noncommercial — NC ham
+```
+`tracks.csv` (asosiy ro'yxat), `raw_tracks.csv` (FMA bergan `license_url` va `track_url`) va `genres.csv` o'qiladi.
+Natija `fma_report.md` va `fma_report.json` (yaroqli treklar ro'yxati) fayllariga yoziladi. Oxirgi hisobot: [reports/fma_metadata_report.md](reports/fma_metadata_report.md).
+
 **Jarayon** (`/fma`):
 1. **🔢 Katalogni sanash.** Butun `tracks.csv` o'qiladi, hech narsa yuklanmaydi. Hisobotda quyidagilar bo'ladi: nechta yaroqli trek bor,
    50 000 maqsadga **yetadimi yoki yo'qmi**, litsenziya, janr va til bo'yicha taqsimot, rad etish sabablari.

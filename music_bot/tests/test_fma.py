@@ -44,6 +44,20 @@ def test_parse_license_titles(title, code, url):
     assert (lic.code, lic.url) == (code, url)
 
 
+def test_parse_license_url_kept_as_given():
+    lic = parse_license("Attribution-Noncommercial-Share Alike 2.5 UK: Scotland",
+                        "http://creativecommons.org/licenses/by-nc-sa/2.5/scotland/")
+    assert lic.code == "by-nc-sa" and lic.url == "https://creativecommons.org/licenses/by-nc-sa/2.5/scotland/"
+    lic = parse_license("Attribution-NonCommercial-ShareAlike 3.0 (Will Not Appear in Vimeo Music Store)",
+                        "http://creativecommons.org/licenses/by-nc-sa/3.0")
+    assert lic.url == "https://creativecommons.org/licenses/by-nc-sa/3.0/"
+    for title, url in (("Public Domain", "http://creativecommons.org/licenses/publicdomain/"),
+                       ("Noncommercial Sampling Plus", "http://creativecommons.org/licenses/nc-sampling+/1.0/"),
+                       ("FMA-Limited: Download Only", "http://freemusicarchive.org/FMA_License"),
+                       ("Art Libre", "http://artlibre.org/licence/lal/en")):
+        assert parse_license(title, url).code == "unknown", title
+
+
 def test_parse_license_url():
     lic = parse_license(url="https://creativecommons.org/licenses/by-nc-nd/4.0/")
     assert lic.code == "by-nc-nd" and lic.noncommercial and lic.no_derivatives
@@ -310,3 +324,38 @@ def test_fma_job_items_are_compact(tg):
     job = count_job(bot, dp, m)
     assert set(job["items"][0]) == {"n", "fma_id", "status"}
     assert len(json.dumps(job["items"][0])) < 60  # 50 000 trek ~ 3 MB
+
+
+# --------------------------------------------------------------------------- #
+# Metadata hisoboti (audio'siz)
+# --------------------------------------------------------------------------- #
+def test_metadata_report(dataset, tmp_path):
+    from importer import fma_report
+    meta = dataset / "fma_metadata"
+    with open(meta / "raw_tracks.csv", "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["track_id", "license_title", "license_url", "track_url", "artist_url"])
+        urls = {2: "by-nc-sa/3.0", 3: "by/4.0", 5: "by-nd/4.0", 12: "by-sa/4.0", 15: "by-sa/3.0/us"}
+        for tid, *_rest in ROWS:
+            lic = _rest[7]
+            u = f"http://creativecommons.org/licenses/{urls[tid]}/" if tid in urls else ""
+            if tid == 10:
+                u = "http://creativecommons.org/publicdomain/zero/1.0/"
+            w.writerow([tid, lic, u, f"http://freemusicarchive.org/music/x/{tid}/", ""])
+    (meta / "genres.csv").write_text(
+        "genre_id,#tracks,parent,title,top_level\n10,1,0,Pop,10\n12,1,0,Rock,12\n21,1,0,Hip-Hop,21\n"
+        "2,1,0,International,2\n4,1,0,Jazz,4\n17,1,0,Folk,17\n38,1,0,Experimental,38\n", encoding="utf-8")
+    rep = fma_report.analyze(meta, commercial=True)
+    # faqat litsenziya bo'yicha (janr filtri va audio tekshiruvi yo'q): 2 = NC, 13 = Sampling+
+    assert rep.total == 9 and rep.eligible == 7
+    assert sorted(r["fma_id"] for r in rep.eligible_rows) == [3, 5, 10, 11, 12, 14, 15]
+    assert rep.reasons["NonCommercial (bot tijoriy)"] == 1
+    assert rep.rejected_titles == {"Creative Commons Sampling+ 1.0": 1}
+    assert rep.langs_eligible["uz"] == 1 and rep.langs_eligible["ru"] == 1 and rep.langs_eligible["ko"] == 1
+    row = next(r for r in rep.eligible_rows if r["fma_id"] == 15)
+    assert row["license_url"] == "https://creativecommons.org/licenses/by-sa/3.0/us/"
+    assert row["source_url"] == "http://freemusicarchive.org/music/x/15/"
+    nc = fma_report.analyze(meta, commercial=False)
+    assert nc.eligible == rep.eligible + 1
+    md = fma_report.to_markdown(rep, nc, target=50_000)
+    assert "YETMAYDI" in md and "| O'zbek | 1 | **1** | 1 |" in md

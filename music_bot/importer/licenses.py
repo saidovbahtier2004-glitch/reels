@@ -61,15 +61,17 @@ def parse_license(title: str = "", url: str = "") -> LicenseInfo:
     low = t.lower()
     u = (url or "").strip()
 
-    m = re.search(r"creativecommons\.org/(licenses|publicdomain)/([a-z\-]+)/(\d\.\d)(?:/([a-z]{2}))?", u.lower())
+    m = re.search(r"creativecommons\.org/(licenses|publicdomain)/([a-z\-]+)/(\d\.\d)(?:/([a-z\-]+))?/?$",
+                  u.lower())
     if m:
         kind, code, version, port = m.groups()
         if kind == "publicdomain":
             code = "cc0" if code == "zero" else "pdm" if code == "mark" else "unknown"
         elif code not in {"by", "by-sa", "by-nd", "by-nc", "by-nc-sa", "by-nc-nd"}:
             code = "unknown"
-        canon = _canonical_url(code, version, port) if code != "unknown" else ""
-        return LicenseInfo(code, version, t or code, canon or u)
+        # manba bergan URL'ni qayta qurmaymiz (masalan .../2.5/scotland/), faqat https va oxirgi "/"
+        canon = ("https://" + u.split("://", 1)[-1].rstrip("/") + "/") if code != "unknown" else ""
+        return LicenseInfo(code, version, t or code, canon)
 
     if not low:
         return LicenseInfo("unknown", "", t, "")
