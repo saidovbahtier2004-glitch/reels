@@ -907,6 +907,20 @@ async def channel_audio(message: Message) -> None:
         log.exception("Kutubxonaga qo'shib bo'lmadi (post %s)", message.message_id)
 
 
+@router.message(Command("version"))
+async def cmd_version(message: Message) -> None:
+    commit = (os.getenv("RENDER_GIT_COMMIT") or "")[:7] or "noma'lum"
+    await message.answer(f"🤖 Bot versiyasi: <code>{commit}</code>")
+
+
+@router.message(F.text.startswith("/"))
+async def unknown_command(message: Message) -> None:
+    """Noma'lum buyruqqa jim qolmaymiz (eng oxirgi handler bo'lishi kerak)."""
+    cmd = esc(message.text.split()[0])
+    await message.answer(f"🤷 <code>{cmd}</code> degan buyruq yo'q.\n"
+                         "Qo'shiq nomini yozing yoki video yuboring. Yordam: /start")
+
+
 # --------------------------------------------------------------------------- #
 # Ommaviy import (importer paketi). Import router'i birinchi turadi, chunki u
 # ochiq import bo'lganda admin yuborgan audiolarni Shazam'dan oldin ushlaydi.

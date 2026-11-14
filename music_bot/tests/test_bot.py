@@ -343,3 +343,16 @@ def test_text_search_without_library(env):
     bot, dp, s, lib = env
     run(feed(bot, dp, private_text("hech narsa")))
     assert "topilmadi" in s.texts()
+
+
+def test_unknown_command_gets_reply_and_version(env, monkeypatch):
+    bot, dp, s, lib = env
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "abcdef1234567")
+    run(feed(bot, dp, private_text("/nimadir"), private_text("/version"),
+             private_text("/vault", user=USER), private_text("/admin", user=ADMIN)))
+    out = s.texts()
+    assert "/nimadir</code> degan buyruq yo'q" in out
+    assert "<code>abcdef1</code>" in out
+    assert "faqat adminlar" in out          # /vault oddiy foydalanuvchiga
+    assert "Admin panel" in out             # mavjud buyruqlarni fallback ushlamaydi
+    assert out.count("degan buyruq yo'q") == 1
