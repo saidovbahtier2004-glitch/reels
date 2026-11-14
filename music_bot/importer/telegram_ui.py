@@ -50,6 +50,10 @@ def fma_report_text(job: dict) -> list[str]:
     lines = [f"⚖️ Rejim: {mode}", f"🎼 Janrlar: {', '.join(st.get('genres') or ['hammasi'])}"]
     if st.get("languages"):
         lines.append(f"🌐 Til filtri: {', '.join(st['languages'])}")
+    if st.get("mode") == "test":
+        return [f"🧪 <b>Test importi</b>: {len(job['items'])} ta bittalab tekshirilgan trek",
+                "Audio: rasmiy FMA arxivi (faqat shu treklar), har biri rasmiy sha1 bilan tekshiriladi.",
+                "Butun katalog importi test natijalari ko'rib chiqilgandan keyingina."]
     if rep is None:
         lines.append(f"🔢 Sanalgan qatorlar: {job.get('counted_rows', 0):,}".replace(",", " "))
         lines.append(f"🎯 Maqsad {target:,}: hali sanalmagan".replace(",", " "))
@@ -147,6 +151,8 @@ def screen_kb(job: dict) -> InlineKeyboardMarkup:
     elif st in (COLLECTING, COUNTING):
         rows.append([b("🔄 Yangilash", "refresh")])
     extra = []
+    if job["kind"] == "fma" and job.get("settings", {}).get("mode") == "test" and st in (FINISHED, PAUSED):
+        rows.append([b("📋 Natijalar", "results")])
     if c[FAILED]:
         extra.append(b(f"📋 Xatolar ({c[FAILED]})", "failed"))
     if c[WAITING]:
@@ -173,7 +179,8 @@ HELP = (
     "<code>/vault</code>: sessiya ochiladi. Keyin ZIP (har biri ≤20 MB), audio fayllar va ixtiyoriy CSV yuboring.\n"
     "<code>/vault_artist Ism</code>: standart ijrochi, <code>/vault_folder yo'l</code>: serverdagi papka.\n\n"
     "<b>5. Free Music Archive</b> (CC litsenziyali)\n"
-    "<code>/fma</code>: sozlamalar, katalogni sanash, keyin import\n\n"
+    "<code>/fma</code>: sozlamalar, katalogni sanash, keyin import\n"
+    "<code>/fma_test</code>: 20 ta tasdiqlangan trek bilan test importi\n\n"
     "<code>/imports</code>: barcha import'lar ekrani\n\n"
     "<b>Boshqaruv:</b> <code>/import_status</code>, <code>/import_pause ID</code>, <code>/import_resume ID</code>, "
     "<code>/import_cancel ID</code>, <code>/import_finish ID</code>, <code>/import_failed ID</code>, "
@@ -571,6 +578,24 @@ def build_router(manager: ImportManager, is_admin: Callable[[int | None], bool])
         if job is not None:
             await new_progress_message(message, job)
 
+    @router.message(Command("fma_test"), private)
+    async def cmd_fma_test(message: Message) -> None:
+        if not await need_admin(message):
+            return
+        if manager.fma_job() is not None:
+            await message.answer("FMA import allaqachon ochiq: /imports")
+            return
+        import json as _json
+        from pathlib import Path as _P
+        batch = _P(fma.MANIFEST).with_name("fma_test_batch.json")
+        try:
+            ids = _json.loads(batch.read_text())
+        except Exception:  # noqa: BLE001
+            await message.answer("❌ Test ro'yxati (reports/fma_test_batch.json) topilmadi.")
+            return
+        job = manager.create_fma_test_job(message.from_user.id, ids)
+        await new_progress_message(message, job)
+
     @router.message(Command("imports"), private)
     async def cmd_imports(message: Message) -> None:
         if not await need_admin(message):
@@ -631,6 +656,20 @@ def build_router(manager: ImportManager, is_admin: Callable[[int | None], bool])
         elif action == "cancel":
             manager.cancel(job)
             note = "Bekor qilindi"
+        elif action == "results":
+            lib = manager.library
+            lines = [f"📋 Import #{job['id']} natijalari\n"]
+            icons = {DONE: "✅", SKIPPED: "⏭", FAILED: "❌", PENDING: "⏳", WAITING: "🏷"}
+            for it in job["items"][:40]:
+                li = lib.get(it["lib_id"]) if it.get("lib_id") else None
+                name = f"{li['artist']} — {li['title']} ({li.get('license_id', '')})" if li else f"FMA #{it.get('fma_id')}"
+                line = f"{icons.get(it['status'], '•')} {esc(name)}"
+                if it.get("error"):
+                    line += f": <i>{esc(it['error'])}</i>"
+                lines.append(line)
+            await cb.answer()
+            await cb.message.answer("\n".join(lines))
+            return
         elif action in ("failed", "unmatched"):
             want = FAILED if action == "failed" else WAITING
             items = [it for it in job["items"] if it["status"] == want]

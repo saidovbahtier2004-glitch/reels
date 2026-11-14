@@ -233,6 +233,15 @@ class ImportManager:
         self._tasks[job["id"]] = asyncio.create_task(self._count(job))
         return job
 
+    def create_fma_test_job(self, owner: int, ids: list[int], audio: str = fma.ARCHIVE_URL) -> dict:
+        """Tasdiqlangan ro'yxatdan aniq treklar bilan test importi (sanashsiz, admin boshlaydi)."""
+        settings = fma.Settings(metadata="", audio=audio, manifest="builtin", ids=tuple(ids), mode="test")
+        job = self.create_job("fma", [], provider="fma", owner=owner)
+        job.update(status=COLLECTING, settings=settings.to_dict(), counted_rows=len(ids),
+                   items=[{"n": i + 1, "fma_id": tid, "status": PENDING} for i, tid in enumerate(ids)])
+        self.save(job)
+        return job
+
     async def _count(self, job: dict) -> None:
         """Katalogni sanaydi (alohida thread'da) va ekranni har bir necha soniyada yangilaydi."""
         settings = fma.Settings.from_dict(job["settings"])
@@ -424,8 +433,11 @@ class ImportManager:
     async def _fma_open(self, job: dict) -> None:
         settings = fma.Settings.from_dict(job["settings"])
         ids = {it["fma_id"] for it in job["items"] if it["status"] == PENDING}
-        cands = await asyncio.to_thread(fma.load_candidates, settings, ids)
-        audio = await asyncio.to_thread(fma.AudioSource, fma.resolve(settings.audio))
+        if settings.manifest:  # tasdiqlangan ro'yxat: faqat status=verified
+            cands = await asyncio.to_thread(fma.load_manifest, fma.manifest_path(settings.manifest), ids)
+        else:
+            cands = await asyncio.to_thread(fma.load_candidates, settings, ids)
+        audio = await asyncio.to_thread(fma.open_audio, settings.audio, ids)
         self._fma = getattr(self, "_fma", {})
         self._fma[job["id"]] = (cands, audio, Policy(commercial=settings.commercial))
 
@@ -439,7 +451,8 @@ class ImportManager:
         lib = self.library
         c = cands.get(item["fma_id"])
         if c is None:
-            item.update(status=FAILED, error="metadata'da topilmadi", permanent=True)
+            item.update(status=FAILED, error="tasdiqlangan ro'yxatda yo'q (huquqi noaniq) — yuklanmadi",
+                        permanent=True)
             return
         problem = policy.check(c.license, will_modify=False)  # siyosat o'zgargan bo'lsa ham qayta tekshiramiz
         if problem:
@@ -456,6 +469,9 @@ class ImportManager:
             return
         try:
             data = await asyncio.to_thread(audio.read, c.fma_id)
+            if c.sha1 and hashlib.sha1(data).hexdigest() != c.sha1:
+                item.update(status=FAILED, error="rasmiy sha1 mos emas (fayl buzilgan)", permanent=True)
+                return
             if len(data) > fma.MAX_UPLOAD:
                 item.update(status=FAILED, error="audio > 49 MB", permanent=True)
                 return

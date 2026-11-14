@@ -188,6 +188,20 @@ python -m importer.fma_report /yo'l/fma_metadata --out fma_report   # --noncomme
 `tracks.csv` (asosiy ro'yxat), `raw_tracks.csv` (FMA bergan `license_url` va `track_url`) va `genres.csv` o'qiladi.
 Natija `fma_report.md` va `fma_report.json` (yaroqli treklar ro'yxati) fayllariga yoziladi. Oxirgi hisobot: [reports/fma_metadata_report.md](reports/fma_metadata_report.md).
 
+**Bittalab tekshirish va manifest:**
+```bash
+python -m importer.fma_verify /yo'l/fma_metadata arxiv_index.json checksums.txt --out fma_verified_tracks.csv
+```
+Har bir trek uchun litsenziya nomi va URL'i alohida solishtiriladi, siyosat tekshiriladi, audio mavjudligi va hajmi
+`fma_full.zip`'ning fayl ro'yxatidan, butunligi esa rasmiy `checksums` bo'yicha tekshiriladi. Bu ma'lumotlar HTTP Range orqali olinadi
+(~20 MB), butun arxiv yuklanmaydi. Natija [reports/fma_verification_report.md](reports/fma_verification_report.md),
+manifest `reports/fma_verified_tracks.csv.gz` (bot shundan o'qiydi), test ro'yxati `reports/fma_test_batch.json`.
+Faqat `verified` holatidagi treklar yuklanadi.
+
+**Test importi:** botda `/fma_test` → **▶️ Importni boshlash**. 20 ta trek rasmiy arxivdan Range bilan olinadi,
+sha1 tekshiriladi va o'zgartirilmasdan kanalga yuboriladi. **📋 Natijalar** tugmasi har bir trekning holatini ko'rsatadi.
+Butun katalog importi test natijalari ko'rib chiqilgandan keyin alohida yoqiladi.
+
 **Jarayon** (`/fma`):
 1. **🔢 Katalogni sanash.** Butun `tracks.csv` o'qiladi, hech narsa yuklanmaydi. Hisobotda quyidagilar bo'ladi: nechta yaroqli trek bor,
    50 000 maqsadga **yetadimi yoki yo'qmi**, litsenziya, janr va til bo'yicha taqsimot, rad etish sabablari.

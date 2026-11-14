@@ -89,17 +89,17 @@ COLUMNS = [("album", "title"), ("artist", "name"), ("artist", "website"), ("set"
            ("track", "license"), ("track", "title")]
 
 ROWS = [  # id, album, artist, website, subset, dur, genre, lang, license, title
-    (2, "Al, bum", "AWOL", "http://awol.example", "small", "168", "Hip-Hop", "en",
+    (2, "Al, bum", "AWOL", "http://awol.example", "small", "1", "Hip-Hop", "en",
      "Attribution-NonCommercial-ShareAlike 3.0 International", "Food"),
-    (3, "A", "Ozoda", "", "large", "200", "Pop", "uz", "Attribution 4.0 International", "Bahor"),
-    (5, "B", "Ivan", "", "large", "210", "Rock", "ru", "Attribution-NoDerivatives 4.0 International",
+    (3, "A", "Ozoda", "", "large", "1", "Pop", "uz", "Attribution 4.0 International", "Bahor"),
+    (5, "B", "Ivan", "", "large", "1", "Rock", "ru", "Attribution-NoDerivatives 4.0 International",
      "Pesnya \"1\""),
-    (10, "C", "Kim", "", "large", "190", "International", "ko", "CC0 1.0 Universal", "Haneul"),
-    (11, "C", "Kim", "", "large", "190", "Experimental", "", "Attribution 4.0 International", "Noise"),
-    (12, "D", "Sam", "", "large", "180", "Jazz", "", "Attribution-ShareAlike 4.0 International", "Blue"),
-    (13, "D", "Sam", "", "large", "180", "Jazz", "", "Creative Commons Sampling+ 1.0", "Sample"),
-    (14, "E", "Ana", "", "large", "180", "Folk", "es", "Attribution 4.0 International", "Sin audio"),
-    (15, "E", "Ana", "", "large", "180", "Folk", "es", "Attribution-ShareAlike 3.0 United States", "Copia"),
+    (10, "C", "Kim", "", "large", "1", "International", "ko", "CC0 1.0 Universal", "Haneul"),
+    (11, "C", "Kim", "", "large", "1", "Experimental", "", "Attribution 4.0 International", "Noise"),
+    (12, "D", "Sam", "", "large", "1", "Jazz", "", "Attribution-ShareAlike 4.0 International", "Blue"),
+    (13, "D", "Sam", "", "large", "1", "Jazz", "", "Creative Commons Sampling+ 1.0", "Sample"),
+    (14, "E", "Ana", "", "large", "1", "Folk", "es", "Attribution 4.0 International", "Sin audio"),
+    (15, "E", "Ana", "", "large", "1", "Folk", "es", "Attribution-ShareAlike 3.0 United States", "Copia"),
 ]
 
 
@@ -359,3 +359,169 @@ def test_metadata_report(dataset, tmp_path):
     assert nc.eligible == rep.eligible + 1
     md = fma_report.to_markdown(rep, nc, target=50_000)
     assert "YETMAYDI" in md and "| O'zbek | 1 | **1** | 1 |" in md
+
+
+# --------------------------------------------------------------------------- #
+# Bittalab tekshirish (fma_verify), masofaviy arxiv va /fma_test
+# --------------------------------------------------------------------------- #
+import gzip
+import hashlib
+import http.server
+import threading
+
+from importer import fma_verify, remote_zip
+
+
+def write_meta_files(meta, audio_bytes, raw_overrides=None):
+    with open(meta / "raw_tracks.csv", "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["track_id", "license_title", "license_url", "track_url", "artist_url"])
+        urls = {2: "licenses/by-nc-sa/3.0", 3: "licenses/by/4.0", 5: "licenses/by-nd/4.0",
+                10: "publicdomain/zero/1.0", 11: "licenses/by/4.0", 12: "licenses/by-sa/4.0",
+                14: "licenses/by/4.0", 15: "licenses/by-sa/3.0/us"}
+        for tid, *rest in ROWS:
+            lic, u = rest[7], (f"http://creativecommons.org/{urls[tid]}/" if tid in urls else "")
+            lic, u = (raw_overrides or {}).get(tid, (lic, u))
+            w.writerow([tid, lic, u, f"http://freemusicarchive.org/music/x/{tid}/", ""])
+    (meta / "genres.csv").write_text("genre_id,#tracks,parent,title,top_level\n10,1,0,Pop,10\n",
+                                     encoding="utf-8")
+
+
+def test_verify_statuses(dataset, audio_bytes):
+    meta = dataset / "fma_metadata"
+    # 12: nomi BY-SA, URL esa BY-NC-SA -> huquq noaniq (needs_review emas, siyosat URL bo'yicha NC -> o'tkaziladi)
+    # 11: nomi BY, URL BY-ND -> needs_review
+    write_meta_files(meta, audio_bytes, {11: ("Attribution 4.0 International",
+                                              "http://creativecommons.org/licenses/by-nd/4.0/")})
+    tracks = meta / "tracks.csv"  # 10-trek metadata'da 190 s, fayl esa 100 bayt -> buzilgan
+    lines = tracks.read_text(encoding="utf-8").splitlines()
+    lines = [l.replace(",1,International,", ",190,International,") if l.startswith("10,") else l for l in lines]
+    tracks.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    index = {fma.audio_member(t): len(b) for t, b in audio_bytes.items()}
+    index[fma.audio_member(12)] = 60 * 1024 * 1024          # juda katta
+    index[fma.audio_member(10)] = 100
+    sums = {fma.audio_member(t): hashlib.sha1(b).hexdigest() for t, b in audio_bytes.items()}
+    rows, considered = fma_verify.verify(meta, index, sums)
+    st = {r["fma_id"]: (r["status"], r["reason"]) for r in rows}
+    assert st[3][0] == st[5][0] == st[15][0] == "verified"
+    assert st[11][0] == "needs_review" and "mos emas" in st[11][1]
+    assert st[12] == ("excluded", "audio > 49 MB (o'zgartirmasdan yuborib bo'lmaydi)")
+    assert st[10][0] == "excluded" and "buzilgan" in st[10][1]
+    assert st[14] == ("excluded", "audio arxivda yo'q; rasmiy sha1 yo'q")
+    assert 2 not in st and 13 not in st  # NC va Sampling+ batafsil tekshiruvga kirmaydi
+    r3 = next(r for r in rows if r["fma_id"] == 3)
+    assert r3["source_url"] == "http://freemusicarchive.org/music/x/3/" and r3["language"] == "O'zbek"
+    assert r3["attribution"].startswith("«Bahor» — Ozoda. Free Music Archive: http://freemusicarchive.org")
+    assert r3["audio_sha1"] == hashlib.sha1(audio_bytes[3]).hexdigest()
+
+
+def test_pick_test_batch_only_typical_verified():
+    rows = [{"fma_id": i, "status": "verified", "license": f"L{i % 3}", "language_code": "",
+             "genre_top": "", "audio_bytes": 2_000_000 + i, "duration": "120"} for i in range(30)]
+    rows += [{"fma_id": 100, "status": "verified", "license": "LX", "language_code": "uz", "genre_top": "",
+              "audio_bytes": 50_000, "duration": "3"},             # parcha — tanlanmaydi
+             {"fma_id": 101, "status": "needs_review", "license": "LY", "language_code": "uz",
+              "genre_top": "", "audio_bytes": 2_000_000, "duration": "120"}]
+    batch = fma_verify.pick_test_batch(rows)
+    ids = [r["fma_id"] for r in batch]
+    assert len(ids) == 20 and 100 not in ids and 101 not in ids
+    assert {r["license"] for r in batch} == {"L0", "L1", "L2"}
+    assert fma_verify.pick_test_batch(rows) == batch  # deterministik
+
+
+class RangeHandler(http.server.BaseHTTPRequestHandler):
+    data = b""
+
+    def log_message(self, *a):
+        pass
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(self.data)))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("ETag", '"x"')
+        self.end_headers()
+
+    def do_GET(self):
+        a, b = self.headers["Range"].split("=")[1].split("-")
+        chunk = self.data[int(a):int(b) + 1]
+        self.send_response(206)
+        self.send_header("Content-Length", str(len(chunk)))
+        self.send_header("ETag", '"x"')
+        self.end_headers()
+        self.wfile.write(chunk)
+
+
+@pytest.fixture
+def remote_archive(audio_bytes, monkeypatch):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_BZIP2) as z:  # FMA ham bzip2 ishlatadi
+        for tid, data in audio_bytes.items():
+            z.writestr("fma_full/" + fma.audio_member(tid), data)
+    RangeHandler.data = buf.getvalue()
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), RangeHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    monkeypatch.setattr(remote_zip, "check_url", lambda url: None)
+    monkeypatch.setattr(fma, "check_url", lambda url: None)
+    yield f"http://127.0.0.1:{srv.server_address[1]}/fma_full.zip"
+    srv.shutdown()
+
+
+def test_check_url_only_official_host():
+    for bad in ("https://example.com/fma_full.zip", "http://os.unil.cloud.switch.ch/fma/fma_full.zip",
+                "https://www.youtube.com/x"):
+        with pytest.raises(remote_zip.RemoteSourceError):
+            remote_zip.check_url(bad)
+    remote_zip.check_url("https://os.unil.cloud.switch.ch/fma/fma_full.zip")
+
+
+def test_remote_audio_source_reads_only_needed(remote_archive, audio_bytes):
+    src = fma.open_audio(remote_archive, only={3, 5})
+    assert src.read(3) == audio_bytes[3] and src.stat(5) == len(audio_bytes[5])
+    assert src.stat(10) is None  # boshqalari xotiradan olib tashlangan
+    f = src._zip.fp
+    assert f.bytes_fetched < len(RangeHandler.data)  # butun arxiv yuklanmadi
+
+
+def test_fma_test_import_via_bot(tg, audio_bytes, remote_archive, monkeypatch, tmp_path):
+    bot, dp, s, lib, m = tg
+    meta = tmp_path / "meta"
+    meta.mkdir()
+    for f in ("tracks.csv",):
+        (meta / f).write_text((Path(str(fma.resolve("fma_metadata/tracks.csv")))).read_text(encoding="utf-8"),
+                              encoding="utf-8")
+    write_meta_files(meta, audio_bytes)
+    index = {fma.audio_member(t): len(b) for t, b in audio_bytes.items()}
+    sums = {fma.audio_member(t): hashlib.sha1(b).hexdigest() for t, b in audio_bytes.items()}
+    sums[fma.audio_member(12)] = "0" * 40  # rasmiy sha1 bilan mos kelmaydigan holatni sinash
+    rows, _ = fma_verify.verify(meta, index, sums)
+    out = tmp_path / "reports" / "fma_verified_tracks.csv"
+    out.parent.mkdir()
+    fma_verify.write_csv(rows, out)
+    gz = out.with_suffix(".csv.gz")
+    gz.write_bytes(gzip.compress(out.read_bytes()))
+    (out.parent / "fma_test_batch.json").write_text(json.dumps([3, 5, 10, 12, 2]))  # 2 = NC, ro'yxatda yo'q
+    monkeypatch.setattr(fma, "MANIFEST", gz)
+    monkeypatch.setattr(fma, "ARCHIVE_URL", remote_archive)
+
+    async def go():
+        await feed(bot, dp, private_text("/fma_test", user=ADMIN))
+        job = m.fma_job()
+        job["settings"]["audio"] = remote_archive
+        assert s.of(SendAudio) == []  # admin boshlamaguncha hech narsa yuklanmaydi
+        await feed(bot, dp, cb(f"imp:start:{job['id']}"))
+        await m.wait(job["id"])
+        await feed(bot, dp, cb(f"imp:results:{job['id']}"))
+        return job
+    job = run(go())
+    by = {it["fma_id"]: it for it in job["items"]}
+    assert job["status"] == FINISHED
+    assert [by[t]["status"] for t in (3, 5, 10)] == [DONE, DONE, DONE]
+    assert by[12]["status"] == FAILED and "sha1" in by[12]["error"]
+    assert by[2]["status"] == FAILED and "huquqi noaniq" in by[2]["error"]
+    ups = s.of(SendAudio)
+    assert len(ups) == 3 and {u.audio.data for u in ups} == {audio_bytes[3], audio_bytes[5], audio_bytes[10]}
+    it = lib.find_existing(provider="fma", external_id="3")
+    assert it["source_url"] == "http://freemusicarchive.org/music/x/3/" and it["license_url"]
+    results = s.of(SendMessage)[-1].text
+    assert "✅ Ozoda — Bahor (CC BY 4.0)" in results and "❌ FMA #12" in results

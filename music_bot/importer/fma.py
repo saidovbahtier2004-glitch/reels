@@ -14,6 +14,7 @@ hajm (Telegram 49 MB) va format (faqat MP3, o'zgartirilmagan holda yuboriladi).
 from __future__ import annotations
 
 import csv
+import gzip
 import logging
 import os
 import sys
@@ -24,7 +25,12 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator
 
 from .licenses import LicenseInfo, Policy, attribution, parse_license
+from .remote_zip import HttpRangeFile, check_url
 from .vault import VaultError, import_root
+
+# Bittalab tekshirilgan treklar ro'yxati (importer.fma_verify natijasi) — repoda saqlanadi
+MANIFEST = Path(__file__).resolve().parent.parent / "reports" / "fma_verified_tracks.csv.gz"
+ARCHIVE_URL = "https://os.unil.cloud.switch.ch/fma/fma_full.zip"
 
 log = logging.getLogger("music_bot.importer")
 
@@ -57,12 +63,13 @@ class Candidate:
     duration: int
     license: LicenseInfo
     artist_url: str = ""
-
-    @property
-    def source_url(self) -> str:
-        return ""  # tracks.csv'da trek URL'i yo'q — taxmin qilmaymiz
+    source_url: str = ""        # FMA'ning o'zi bergan trek URL'i (raw_tracks.csv); bo'lmasa bo'sh
+    sha1: str = ""              # rasmiy fma_full/checksums
+    audio_bytes: int = 0
 
     def attribution(self) -> str:
+        if self.source_url:
+            return attribution(self.title, self.artist, self.license, "Free Music Archive", self.source_url)
         return attribution(self.title, self.artist, self.license,
                            f"Free Music Archive, trek #{self.fma_id} (FMA dataset, {DATASET_URL})")
 
@@ -133,10 +140,25 @@ def audio_member(fma_id: int) -> str:
 
 
 class AudioSource:
-    def __init__(self, path: Path) -> None:
+    """Audio manbasi: ochilgan papka, mahalliy fma_full.zip yoki rasmiy masofaviy arxiv (HTTP Range)."""
+
+    def __init__(self, path: "Path | str", only: set[int] | None = None) -> None:
         self.path = path
         self._zip: zipfile.ZipFile | None = None
         self._names: dict[str, zipfile.ZipInfo] = {}
+        if isinstance(path, str) and path.startswith(("http://", "https://")):
+            check_url(path)
+            self._zip = zipfile.ZipFile(HttpRangeFile(path))
+            for info in self._zip.infolist():
+                p = PurePosixPath(info.filename)
+                if p.suffix.lower() == ".mp3" and len(p.parts) >= 2:
+                    self._names["/".join(p.parts[-2:])] = info
+            if only is not None:  # 106 ming yozuvni xotirada saqlamaymiz
+                keep = {audio_member(i) for i in only}
+                self._names = {k: v for k, v in self._names.items() if k in keep}
+                self._zip.filelist = list(self._names.values())
+                self._zip.NameToInfo = {i.filename: i for i in self._zip.filelist}
+            return
         if path.is_file() and path.suffix.lower() == ".zip":
             self._zip = zipfile.ZipFile(path)
             for info in self._zip.infolist():
@@ -189,6 +211,9 @@ class Settings:
     genres: tuple[str, ...] = tuple(GENRE_MAP)   # FMA top-level nomlari; bo'sh = hammasi
     languages: tuple[str, ...] = ()              # bo'sh = filtrsiz
     target: int = 50_000
+    manifest: str = ""                           # bo'sh emas -> metadata manifestdan, faqat "verified"
+    ids: tuple[int, ...] = ()                    # test importi uchun aniq treklar
+    mode: str = "catalog"                        # catalog | test
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -205,12 +230,13 @@ class Settings:
 
     def to_dict(self) -> dict:
         return {"metadata": self.metadata, "audio": self.audio, "commercial": self.commercial,
-                "genres": list(self.genres), "languages": list(self.languages), "target": self.target}
+                "genres": list(self.genres), "languages": list(self.languages), "target": self.target,
+                "manifest": self.manifest, "ids": list(self.ids), "mode": self.mode}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Settings":
         return cls(d["metadata"], d["audio"], d["commercial"], tuple(d["genres"]), tuple(d["languages"]),
-                   d["target"])
+                   d["target"], d.get("manifest", ""), tuple(d.get("ids", ())), d.get("mode", "catalog"))
 
 
 @dataclass
@@ -289,3 +315,44 @@ def load_candidates(s: Settings, ids: set[int]) -> dict[int, Candidate]:
         if rec["track_id"] in ids:
             out[rec["track_id"]] = to_candidate(rec)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Tasdiqlangan manifest (importer.fma_verify) va audio manbasini ochish
+# --------------------------------------------------------------------------- #
+def manifest_path(spec: str) -> Path:
+    return MANIFEST if spec in ("", "builtin") else resolve(spec)
+
+
+def iter_manifest(path: Path) -> Iterator[dict]:
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", newline="", encoding="utf-8-sig") as fh:
+        yield from csv.DictReader(fh)
+
+
+def load_manifest(path: Path, ids: set[int] | None = None) -> dict[int, Candidate]:
+    """Faqat status=verified treklar. Litsenziya manifestdagi nom+URL'dan qayta aniqlanadi."""
+    out = {}
+    for r in iter_manifest(path):
+        tid = int(r["fma_id"])
+        if r["status"] != "verified" or (ids is not None and tid not in ids):
+            continue
+        try:
+            duration = int(float(r.get("duration") or 0))
+        except ValueError:
+            duration = 0
+        top = r.get("genre_top", "")
+        out[tid] = Candidate(
+            fma_id=tid, title=r["title"], artist=r["artist"], album=r.get("album", ""),
+            genre=GENRE_MAP.get(top, top or "—"), fma_genre=top, language=r.get("language_code", ""),
+            duration=duration, license=parse_license(r["license_title"], r["license_url"]),
+            artist_url=r.get("artist_url", ""), source_url=r.get("source_url", ""),
+            sha1=r.get("audio_sha1", ""), audio_bytes=int(r.get("audio_bytes") or 0),
+        )
+    return out
+
+
+def open_audio(spec: str, only: set[int] | None = None) -> AudioSource:
+    if spec.startswith(("http://", "https://")):
+        return AudioSource(spec, only=only)
+    return AudioSource(resolve(spec))
