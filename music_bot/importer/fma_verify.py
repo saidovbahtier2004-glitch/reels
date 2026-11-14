@@ -40,7 +40,10 @@ LANG_NAMES = dict(LANG_CATEGORIES) | {"unspecified": "belgilanmagan"}
 # yuklovchi asl yozuvning huquq egasi emas — CC belgisi bo'lsa ham huquq noaniq.
 ARCHIVAL_CURATORS = {"Excavated_Shellac"}
 ARCHIVAL_HINTS = re.compile(r"\b78\s?rpm|\b78s?\b|shellac|cylinder|gramophone|piano roll|"
-                            r"recorded (in|around|circa) (18|19[0-5])\d|public domain|archive\.org", re.I)
+                            r"recorded (in|around|circa) (18|19[0-5])\d", re.I)
+# Bular faqat trek tavsifi va albom nomida hisobga olinadi: ijrochining o'z sayti archive.org'da
+# bo'lishi (mustaqil musiqachilar ko'p shunday qiladi) tarixiy yozuv belgisi emas.
+SOFT_HINTS = re.compile(r"public domain|\barchive\.org", re.I)  # \b: freemusicarchive.org emas
 
 COLUMNS = ["fma_id", "status", "reason", "title", "artist", "album", "language_code", "language", "genre_top",
            "genres", "license", "license_code", "license_title", "license_url", "attribution", "source_url",
@@ -96,11 +99,12 @@ def verify(folder: Path, index: dict[str, int], checksums: dict[str, str], comme
         if not title or not artist:
             problems.append("nom yoki ijrochi yo'q")
         if lic.code == "pdm":
-            problems.append("Public Domain Mark — litsenziya emas, belgi; ruxsat etilgan ro'yxatda yo'q")
+            problems.append("Public Domain Mark — litsenziya emas (belgi), ruxsat etilgan ro'yxatda yo'q")
         curator = r.get("curator", "")
         if curator in ARCHIVAL_CURATORS:
             problems.append(f"arxiv to'plami ({curator}): yuklovchi asl yozuvning huquq egasi emas")
-        elif ARCHIVAL_HINTS.search(r.get("context", "")):
+        elif (ARCHIVAL_HINTS.search(r.get("context", "") + " " + r.get("artist_website", ""))
+              or SOFT_HINTS.search(r.get("context", ""))):
             problems.append("tavsifda tarixiy/arxiv yozuv belgilari — huquq egasi noaniq")
         member = member_name(tid)
         size = index.get(member)

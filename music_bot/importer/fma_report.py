@@ -64,7 +64,8 @@ def load_raw(path: Path) -> dict[int, dict]:
                                  "artist_url": (r.get("artist_url") or "").strip(),
                                  "curator": (tf.split("/") + ["", ""])[1] if tf.startswith("music/") else "",
                                  "context": " ".join((r.get(k) or "") for k in
-                                                     ("track_information", "album_title", "artist_website"))[:3000]}
+                                                     ("track_information", "album_title"))[:3000],
+                                 "artist_website": (r.get("artist_website") or "")[:500]}
     return out
 
 

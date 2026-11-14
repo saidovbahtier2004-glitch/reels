@@ -18,7 +18,7 @@
 | 10 | 31627 | Juanitos — Mondo Wack | CC BY-SA 2.0 | https://creativecommons.org/licenses/by-sa/2.0/fr/ | http://freemusicarchive.org/music/Juanitos/Soul_Africa/11_-_Mondo_Wack (track) | ✅ | ✅ | ✅ | 99/99 s |
 | 11 | 44884 | Reggie Regan — Such A Type | CC BY-SA 2.5 | https://creativecommons.org/licenses/by-sa/2.5/ca/ | http://freemusicarchive.org/music/Reggie_Regan/Greatest_Hits_Volume_1/Reggie_Regan_-_01_-_Such_A_Type (track) | ✅ | ✅ | ✅ | 165/165 s |
 | 12 | 55190 | Dylan Palme — They're All Messed Up | CC BY-SA 3.0 | https://creativecommons.org/licenses/by-sa/3.0/ | http://freemusicarchive.org/music/Dylan_Palme/Zombies_Ate_My_Neighbors/08TheyreAllMessedUp (track) | ✅ | ✅ | ✅ | 63/63 s |
-| 13 | 107512 | Lovira — Cute percussive | CC BY-SA 4.0 | https://creativecommons.org/licenses/by-sa/4.0/ | http://freemusicarchive.org/music/Lovira/Experiments/05_-_Lovira_-_Cute_percussive (track) | ✅ | ✅ | ✅ | 67/67 s |
+| 13 | 106536 | Apache Tomcat — S! | CC BY-SA 4.0 | https://creativecommons.org/licenses/by-sa/4.0/ | http://freemusicarchive.org/music/Apache_Tomcat/Apache_Tomcat_1089/01S (track) | ✅ | ✅ | ✅ | 63/62 s |
 | 14 | 88931 | Peter Gresser — Skipping in the No Standing Zone | CC0 1.0 | https://creativecommons.org/publicdomain/zero/1.0/ | http://freemusicarchive.org/music/Peter_Gresser/Reimagine_The_Game/Skipping_in_the_No_Standing_Zone (track) | ✅ | ✅ | ✅ | 64/64 s |
 | 15 | 26231 | Volumina — mc trabalenguas | CC BY 4.0 | https://creativecommons.org/licenses/by/4.0/ | http://freemusicarchive.org/music/Volumina/ (artist) | ✅ | ✅ | ✅ | 161/161 s |
 | 16 | 140637 | Monplaisir — Fin du jeu | CC0 1.0 | https://creativecommons.org/publicdomain/zero/1.0/ | http://freemusicarchive.org/music/Monplaisir/Vide/10_fin_de_soire (track) | ✅ | ✅ | ✅ | 114/114 s |
@@ -32,25 +32,27 @@
 ## Talablar bo'yicha
 
 1. **Manba va litsenziya URL'lari.** Har bir trekning litsenziyasi nomi va URL'i bo'yicha alohida aniqlandi, ikkalasi mos keldi. URL'lar FMA bergan ko'rinishda, faqat https'ga o'tkazilgan. 17 ta trekda FMA trek sahifasi bor, 3 tasida (62222, 26231, 61487) trek sahifasi yo'qligi uchun ijrochi sahifasi ishlatilgan. Bu muhitdan creativecommons.org va freemusicarchive.org ochilmadi, jonli tekshiruvni bot `/fma_test` vaqtida bajaradi. Litsenziya sahifasi ochilmasa, trek yuklanmaydi.
-2. **Fayl o'zgarmaganligi.** Har bir MP3'ning sha1'i rasmiy `fma_full/checksums` bilan bir xil, ZIP CRC32 ham to'g'ri. Bot yuklashdan oldin sha1'ni qayta tekshiradi, yuklagandan keyin esa Telegram'dagi nusxani qayta olib solishtiradi. Farq bo'lsa, trek o'chiriladi.
+2. **Fayl o'zgarmaganligi.** Har bir MP3'ning sha1'i rasmiy `fma_full/checksums` bilan bir xil. Bot yuklashdan oldin sha1'ni qayta tekshiradi, yuklagandan keyin esa Telegram'dagi nusxani qayta olib solishtiradi. Farq bo'lsa, trek o'chiriladi. Bazada avvaldan bor treklar ham shu yo'l bilan qayta tekshiriladi.
 3. **Atribusiya.** Bazada nom, ijrochi, albom, litsenziya nomi va URL'i, kodi, manba URL'i va turi, ijrochi sahifasi, sha1 saqlanadi. Kanal posti va foydalanuvchiga yuboriladigan audio caption'ida «Nom» — Ijrochi. Free Music Archive: URL. Litsenziya: … (URL) matni bo'ladi.
-4. **CC BY-ND (4 trek).** FMA importida qayta kodlash, kesish yoki teg o'zgartirish yo'q, MP3 baytlari aynan yuboriladi. Telegram'dagi title/performer maydonlari faylning ichiga yozilmaydi. ND treklar uchun Telegram nusxasining sha1 mosligi hisobotda alohida ko'rsatiladi.
+4. **CC BY-ND (4 trek).** FMA importida qayta kodlash, kesish yoki teg o'zgartirish yo'q, MP3 baytlari aynan yuboriladi. Telegram'dagi title/performer maydonlari faylning ichiga yozilmaydi.
 5. **CC BY-SA (4 trek).** Asl holida tarqatiladi, litsenziya nomi va havolasi ko'rsatiladi, boshqa litsenziya qo'yilmaydi. Ma'lumot sahifasida ShareAlike sharti tushuntirilgan. `protect_content=False` aniq yozilgan, qo'shimcha texnik cheklov (DRM) yo'q.
-6. **Caption va ma'lumot sahifasi.** Audio ostida **📜 Litsenziya** va **🔗 Manba** havola tugmalari va **ℹ️ Ma'lumot** tugmasi bor. Ma'lumot sahifasida litsenziya, manba, o'zgartirilmaganlik (sha1) va litsenziya shartlari ko'rsatiladi.
+6. **Caption va ma'lumot sahifasi.** Audio ostida **📜 Litsenziya** va **🔗 Manba** havola tugmalari va **ℹ️ Ma'lumot** tugmasi bor.
 
-## Ushbu ko'rib chiqishda topilgan va tuzatilgan muammolar
+## Ko'rib chiqishda topilgan va tuzatilgan muammolar
 
-- **Arxiv yozuvlari.** Oldingi test ro'yxatidagi o'zbek, turk, arab, hind va ispan tilidagi 5 ta trek «Excavated Shellac» to'plamidan (eski 78 rpm plastinkalar) olingan edi. Yuklovchi asl yozuvning huquq egasi emas, shuning uchun bu 82 ta trek va tavsifida arxiv belgilari bor yana 133 ta trek **huquqi noaniq** deb belgilandi. Shu sababli o'zbek, turk, arab va hind tillarida tasdiqlangan trek qolmadi.
-- **Public Domain Mark (207 ta).** Bu litsenziya emas, belgi, va siz ruxsat bergan ro'yxatda yo'q, shuning uchun huquqi noaniq deb belgilandi.
-- **Manba URL'i.** Trek sahifasi bo'lmagan 668 ta trek uchun ijrochi sahifasi ishlatildi, havola turi belgilangan.
+- **Arxiv yozuvlari.** «Excavated Shellac» to'plamidagi 82 ta trek (eski 78 rpm plastinkalar, yuklovchi huquq egasi emas) va tavsifida arxiv belgilari bor 48 ta trek **huquqi noaniq** deb belgilandi. Shu sababli o'zbek, turk, arab va hind tillarida tasdiqlangan trek qolmadi.
+- **Public Domain Mark (215 ta).** Bu litsenziya emas, belgi, va siz ruxsat bergan ro'yxatda yo'q, shuning uchun huquqi noaniq deb belgilandi.
+- **Noto'g'ri ishlagan qoida.** «archive.org» qolipi «freemusicarchive.org» ichidan ham topilib, 85 ta zamonaviy trekni (Apache Tomcat, U Can Unlearn Guitar va boshqalar) bloklagan edi. Qolip tuzatildi va ular tasdiqlandi.
+- **Avvalgi test importi.** Eski ro'yxat bilan bajarilgan importda bazaga 6 ta huquqi noaniq trek tushgan. Ularni `/fma_cleanup` buyrug'i bilan admin tasdig'idan keyin olib tashlash mumkin.
 - **Buzilgan fayllar.** Hajmi davomiyligiga mos kelmaydigan 7 ta fayl chiqarildi.
 
 ## Yakuniy katalog
 
-Tasdiqlangan: **11 470**, huquqi noaniq: 401, chiqarilgan: 82.
+Tasdiqlangan: **11 555**, huquqi noaniq: 316, chiqarilgan: 82.
 
 ## Keyingi qadam
 
-1. Botda `/fma_test` → ▶️ Importni boshlash.
-2. **📄 Muvofiqlik hisoboti** tugmasini bosing: CSV va xulosa keladi.
-3. Xulosada «Qolgan katalog importi: mumkin» chiqsa va siz tasdiqlasangiz, qolgan katalog alohida bosqichda import qilinadi.
+1. `/fma_cleanup`: ro'yxatni ko'rib, 🧹 olib tashlash.
+2. Import #3: ▶️ Importni boshlash.
+3. **📄 Muvofiqlik hisoboti**: CSV va xulosa keladi.
+4. Xulosada «Qolgan katalog importi: mumkin» chiqsa va siz tasdiqlasangiz, qolgan katalog alohida bosqichda import qilinadi.

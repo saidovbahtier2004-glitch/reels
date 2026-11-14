@@ -635,3 +635,10 @@ def test_fma_cleanup_removes_unverified_after_confirm(tg, audio_bytes, remote_ar
     assert any(type(c).__name__ == "DeleteMessage" and c.message_id == 777 for c in s.calls)
     run(feed(bot, dp, private_text("/fma_cleanup", user=ADMIN)))
     assert "barcha FMA treklari joriy tasdiqlangan" in s.texts()
+
+
+def test_archival_hints_do_not_match_fma_links():
+    assert not fma_verify.SOFT_HINTS.search("more at http://freemusicarchive.org/music/x/")
+    assert fma_verify.SOFT_HINTS.search("from https://archive.org/details/78_x")
+    assert fma_verify.ARCHIVAL_HINTS.search("a 78rpm shellac disc") and fma_verify.ARCHIVAL_HINTS.search("recorded in 1931")
+    assert not fma_verify.ARCHIVAL_HINTS.search("recorded in 2014")
