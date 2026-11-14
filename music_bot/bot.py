@@ -633,8 +633,9 @@ LICENSE_NOTES = {
 
 
 def track_info_text(it: dict) -> str:
+    sk = it.get("source_kind", "")
     kind = {"track": "trek sahifasi", "album": "albom sahifasi", "artist": "ijrochi sahifasi"}.get(
-        it.get("source_kind", ""), "sahifa")
+        sk.replace("-archive", ""), "sahifa") + (", Wayback arxiv nusxasi" if sk.endswith("-archive") else "")
     lines = [f"ℹ️ <b>{esc(it['artist'])} — {esc(it['title'])}</b>"]
     if it.get("album"):
         lines.append(f"💿 Albom: {esc(it['album'])}")

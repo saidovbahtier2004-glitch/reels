@@ -215,7 +215,7 @@ class Settings:
     target: int = 50_000
     manifest: str = ""                           # bo'sh emas -> metadata manifestdan, faqat "verified"
     ids: tuple[int, ...] = ()                    # test importi uchun aniq treklar
-    mode: str = "catalog"                        # catalog | test
+    mode: str = "catalog"                        # catalog (tracks.csv) | test | manifest (tasdiqlangan ro'yxat)
     verify_urls: bool = False                    # test rejimida doim tekshiriladi
 
     @classmethod

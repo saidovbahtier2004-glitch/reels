@@ -51,6 +51,12 @@ def fma_report_text(job: dict) -> list[str]:
     lines = [f"⚖️ Rejim: {mode}", f"🎼 Janrlar: {', '.join(st.get('genres') or ['hammasi'])}"]
     if st.get("languages"):
         lines.append(f"🌐 Til filtri: {', '.join(st['languages'])}")
+    if st.get("mode") == "manifest":
+        n = len(job["items"])
+        return [f"📚 <b>Katalog importi</b>: {n:,} ta tasdiqlangan trek".replace(",", " "),
+                "Har bir trek: rasmiy sha1 → o'zgartirilmagan holda yuklash → Telegram nusxasi sha1 → "
+                "litsenziya va manba sahifasi (ishlamasa Wayback arxivi) → atribusiya.",
+                "Bazada bor treklar qayta yuklanmaydi, faqat qayta tekshiriladi."]
     if st.get("mode") == "test":
         return [f"🧪 <b>Test importi</b>: {len(job['items'])} ta bittalab tekshirilgan trek",
                 "Audio: rasmiy FMA arxivi (faqat shu treklar), har biri rasmiy sha1 bilan tekshiriladi.",
@@ -224,7 +230,8 @@ def screen_kb(job: dict) -> InlineKeyboardMarkup:
     elif st in (COLLECTING, COUNTING):
         rows.append([b("🔄 Yangilash", "refresh")])
     extra = []
-    if job["kind"] == "fma" and job.get("settings", {}).get("mode") == "test" and st in (FINISHED, PAUSED):
+    if job["kind"] == "fma" and job.get("settings", {}).get("mode") in ("test", "manifest") \
+            and st in (FINISHED, PAUSED, RUNNING):
         rows.append([b("📋 Natijalar", "results"), b("📄 Muvofiqlik hisoboti", "compliance")])
     if c[FAILED]:
         extra.append(b(f"📋 Xatolar ({c[FAILED]})", "failed"))
@@ -254,7 +261,8 @@ HELP = (
     "<b>5. Free Music Archive</b> (CC litsenziyali)\n"
     "<code>/fma</code>: sozlamalar, katalogni sanash, keyin import\n"
     "<code>/fma_test</code>: 20 ta tasdiqlangan trek bilan test importi\n"
-    "<code>/fma_cleanup</code>: bazadagi tasdiqlanmagan FMA treklarini olib tashlash\n\n"
+    "<code>/fma_cleanup</code>: bazadagi tasdiqlanmagan FMA treklarini olib tashlash\n"
+    "<code>/fma_catalog</code>: tasdiqlangan butun katalog (test muvofiqligidan keyin)\n\n"
     "<code>/imports</code>: barcha import'lar ekrani\n\n"
     "<b>Boshqaruv:</b> <code>/import_status</code>, <code>/import_pause ID</code>, <code>/import_resume ID</code>, "
     "<code>/import_cancel ID</code>, <code>/import_finish ID</code>, <code>/import_failed ID</code>, "
@@ -697,6 +705,22 @@ def build_router(manager: ImportManager, is_admin: Callable[[int | None], bool])
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text=f"🧹 {len(items)} tasini olib tashlash", callback_data="imp:cleanup:0")]])
         await message.answer("\n".join(lines), reply_markup=kb)
+
+    @router.message(Command("fma_catalog"), private)
+    async def cmd_fma_catalog(message: Message) -> None:
+        if not await need_admin(message):
+            return
+        if manager.fma_job() is not None:
+            await message.answer("FMA import allaqachon ochiq: /imports")
+            return
+        tests = [j for j in manager.jobs.values() if j["kind"] == "fma"
+                 and j.get("settings", {}).get("mode") == "test" and j["status"] == FINISHED]
+        if not any((j.get("compliance") or {}).get("ready_for_bulk") for j in tests):
+            await message.answer("⛔️ Avval test importi bajarilib, uning 📄 Muvofiqlik hisobotida "
+                                 "«Qolgan katalog importi: mumkin» chiqishi kerak. /fma_test")
+            return
+        job = manager.create_fma_catalog_job(message.from_user.id)
+        await new_progress_message(message, job)
 
     @router.message(Command("imports"), private)
     async def cmd_imports(message: Message) -> None:

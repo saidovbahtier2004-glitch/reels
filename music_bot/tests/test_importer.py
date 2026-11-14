@@ -323,6 +323,7 @@ def tg(env, monkeypatch):
     m = botmod.import_manager
     monkeypatch.setattr(m, "delay", 0)
     monkeypatch.setattr(m, "_tasks", {})
+    monkeypatch.setattr(m, "_license_ok", set())
     m.bind(bot)
 
     async def no_recognize(src, workdir):

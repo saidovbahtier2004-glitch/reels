@@ -70,6 +70,7 @@ class ImportManager:
         self.on_progress: Callable[[dict], Awaitable[None]] | None = None
         self._tasks: dict[str, asyncio.Task] = {}
         self.cache = SourceCache()
+        self._license_ok: set[str] = set()
         self.archive = ArchiveStorage()
         self._upload_lock = asyncio.Lock()  # bir vaqtda bitta job kanalga yozadi
 
@@ -237,6 +238,17 @@ class ImportManager:
     def create_fma_test_job(self, owner: int, ids: list[int], audio: str = fma.ARCHIVE_URL) -> dict:
         """Tasdiqlangan ro'yxatdan aniq treklar bilan test importi (sanashsiz, admin boshlaydi)."""
         settings = fma.Settings(metadata="", audio=audio, manifest="builtin", ids=tuple(ids), mode="test")
+        job = self.create_job("fma", [], provider="fma", owner=owner)
+        job.update(status=COLLECTING, settings=settings.to_dict(), counted_rows=len(ids),
+                   items=[{"n": i + 1, "fma_id": tid, "status": PENDING} for i, tid in enumerate(ids)])
+        self.save(job)
+        return job
+
+    def create_fma_catalog_job(self, owner: int, audio: str = fma.ARCHIVE_URL) -> dict:
+        """Tasdiqlangan ro'yxatdagi BARCHA treklar (admin ▶️ bosmaguncha boshlanmaydi)."""
+        ids = sorted(fma.load_manifest(fma.MANIFEST))
+        settings = fma.Settings(metadata="", audio=audio, manifest="builtin", ids=(), mode="manifest",
+                                verify_urls=True)
         job = self.create_job("fma", [], provider="fma", owner=owner)
         job.update(status=COLLECTING, settings=settings.to_dict(), counted_rows=len(ids),
                    items=[{"n": i + 1, "fma_id": tid, "status": PENDING} for i, tid in enumerate(ids)])
@@ -467,6 +479,40 @@ class ImportManager:
             log.warning("URL tekshiruvi xatosi %s: %s", url, e)
             return 0
 
+    async def _wayback(self, url: str) -> str | None:
+        """Ishlamay qolgan manba sahifasining Wayback Machine'dagi arxiv nusxasi (rasmiy API)."""
+        import aiohttp
+        from urllib.parse import quote
+        api = f"https://archive.org/wayback/available?url={quote(url, safe='')}&timestamp=20170401"
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as s:
+                async with s.get(api) as r:
+                    data = await r.json(content_type=None)
+            snap = (data.get("archived_snapshots") or {}).get("closest") or {}
+            if snap.get("available") and str(snap.get("status")) == "200" and snap.get("url"):
+                return snap["url"].replace("http://", "https://", 1)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Wayback so'rovi xatosi %s: %s", url, e)
+        return None
+
+    async def _check_urls(self, c, chk: dict):
+        """Litsenziya va manba sahifalari. Manba ochilmasa — arxiv nusxasi bilan almashtiriladi."""
+        import dataclasses
+        # faqat muvaffaqiyatli javob keshlanadi: vaqtinchalik xato butun katalogni to'sib qo'ymasin
+        if c.license.url in self._license_ok:
+            chk["license_http"] = 200
+        else:
+            chk["license_http"] = await self._url_status(c.license.url)
+            if chk["license_http"] == 200:
+                self._license_ok.add(c.license.url)
+        chk["source_http"] = await self._url_status(c.source_url)
+        if c.source_url and chk["source_http"] != 200:
+            archived = await self._wayback(c.source_url)
+            chk["source_archived"] = bool(archived)
+            if archived:
+                c = dataclasses.replace(c, source_url=archived, source_kind=f"{c.source_kind}-archive")
+        return c
+
     async def _roundtrip_sha1(self, msg: Message) -> str | None:
         """Telegram'ga yuklangan faylni qayta olib sha1'ini hisoblaydi (bot API: <= 20 MB)."""
         audio = msg.audio or msg.document
@@ -475,15 +521,29 @@ class ImportManager:
         buf = await self.bot.download(audio.file_id)
         return hashlib.sha1(buf.read()).hexdigest()
 
+    async def _ensure_caption(self, existing: dict, c) -> bool:
+        """Avvalgi versiyada caption'siz yuklangan kanal postiga atribusiya qo'shadi."""
+        if not existing.get("msg_id") or self.library.chat_id is None:
+            return False
+        try:
+            await self.bot.edit_message_caption(chat_id=self.library.chat_id, message_id=existing["msg_id"],
+                                                caption=html.escape(c.attribution(), quote=False)[:1000])
+            return True
+        except Exception as e:  # noqa: BLE001
+            if "not modified" in str(e):
+                return True
+            log.warning("Kanal posti caption'ini yangilab bo'lmadi #%s: %s", existing.get("id"), e)
+            return False
+
     async def _recheck_existing(self, job: dict, item: dict, c, existing: dict) -> None:
         """Avvalroq import qilingan FMA trekini qayta tekshiradi: Telegram'dagi nusxa sha1, URL'lar,
         atribusiya maydonlari. Mos kelmasa — bazadan olib tashlanadi."""
         lib = self.library
         chk = {"source_sha1": bool(c.sha1), "existing": True}
         settings = fma.Settings.from_dict(job["settings"])
-        if settings.mode == "test" or settings.verify_urls:
-            chk["license_http"] = await self._url_status(c.license.url)
-            chk["source_http"] = await self._url_status(c.source_url)
+        original_source = c.source_url
+        if settings.mode in ("test", "manifest") or settings.verify_urls:
+            c = await self._check_urls(c, chk)
         tg = None
         if c.sha1 and existing.get("file_id") and (existing.get("file_size") or 0) <= 20 * 1024 * 1024:
             try:
@@ -492,7 +552,7 @@ class ImportManager:
             except Exception as e:  # noqa: BLE001
                 log.warning("FMA #%s qayta tekshiruvda yuklab bo'lmadi: %s", c.fma_id, e)
         chk["telegram_sha1"] = tg
-        chk["caption"] = True  # foydalanuvchiga yuborishda atribusiya bazadan qo'shiladi
+        chk["caption"] = await self._ensure_caption(existing, c)
         item["chk"] = chk
         if tg is False:
             await lib.remove(self.bot, existing)
@@ -503,7 +563,8 @@ class ImportManager:
             self._fail(job, item, f"litsenziya sahifasi ochilmadi (HTTP {chk['license_http']})")
             return
         await lib.update_item(self.bot, existing, c.library_extra() | {
-            "sha1": c.sha1, "unmodified": bool(tg), "import_job": existing.get("import_job")})
+            "sha1": c.sha1, "unmodified": bool(tg), "import_job": existing.get("import_job"),
+            "source_url_original": original_source if original_source != c.source_url else None})
         item.update(status=SKIPPED, error="bazada bor — qayta tekshirildi", lib_id=existing["id"])
 
     async def _process_fma(self, job: dict, item: dict) -> None:
@@ -546,9 +607,9 @@ class ImportManager:
             track = TrackMeta(title=c.title, artist=c.artist, license_id=c.license.short, duration=c.duration)
             chk = {"source_sha1": bool(c.sha1)}
             settings = fma.Settings.from_dict(job["settings"])
-            if settings.mode == "test" or settings.verify_urls:
-                chk["license_http"] = await self._url_status(c.license.url)
-                chk["source_http"] = await self._url_status(c.source_url)
+            original_source = c.source_url
+            if settings.mode in ("test", "manifest") or settings.verify_urls:
+                c = await self._check_urls(c, chk)
                 if chk["license_http"] not in (200, -1):
                     item["chk"] = chk
                     self._fail(job, item, f"litsenziya sahifasi ochilmadi (HTTP {chk['license_http']})")
@@ -559,7 +620,8 @@ class ImportManager:
                 # Fayl o'zgartirilmaydi (CC BY-ND talabi): aynan MP3 baytlari yuboriladi
                 msg = await self._upload(track, file_id=None, audio=AudioFile(data, name), caption=caption)
                 added = await lib.add(self.bot, msg, extra=c.library_extra() | {
-                    "sha256": sha, "sha1": c.sha1, "unmodified": True, "import_job": job["id"]})
+                    "sha256": sha, "sha1": c.sha1, "unmodified": True, "import_job": job["id"],
+                    "source_url_original": original_source if original_source != c.source_url else None})
                 await asyncio.sleep(self.delay)
             chk["caption"] = bool(caption)
             tg_sha1 = await self._roundtrip_sha1(msg)

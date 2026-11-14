@@ -143,6 +143,7 @@ def tg(env, monkeypatch, tmp_path):
     m = botmod.import_manager
     monkeypatch.setattr(m, "delay", 0)
     monkeypatch.setattr(m, "_tasks", {})
+    monkeypatch.setattr(m, "_license_ok", set())
     monkeypatch.setattr(m.cache, "base", tmp_path / "cache")
     monkeypatch.setattr(m.archive, "dir", tmp_path / "archive")
     m.bind(bot)

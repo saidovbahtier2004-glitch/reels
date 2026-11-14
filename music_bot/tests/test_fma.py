@@ -207,6 +207,7 @@ def tg(env, monkeypatch, dataset):
     m = botmod.import_manager
     monkeypatch.setattr(m, "delay", 0)
     monkeypatch.setattr(m, "_tasks", {})
+    monkeypatch.setattr(m, "_license_ok", set())
     m.bind(bot)
     return bot, dp, s, lib, m
 
@@ -642,3 +643,51 @@ def test_archival_hints_do_not_match_fma_links():
     assert fma_verify.SOFT_HINTS.search("from https://archive.org/details/78_x")
     assert fma_verify.ARCHIVAL_HINTS.search("a 78rpm shellac disc") and fma_verify.ARCHIVAL_HINTS.search("recorded in 1931")
     assert not fma_verify.ARCHIVAL_HINTS.search("recorded in 2014")
+
+
+def test_catalog_requires_ready_compliance(tg, audio_bytes, remote_archive, monkeypatch, tmp_path):
+    bot, dp, s, lib, m = tg
+    make_manifest(audio_bytes, remote_archive, monkeypatch, tmp_path, batch=(3, 5))
+    monkeypatch.setattr(m, "_url_status", ok_status)
+    run(feed(bot, dp, private_text("/fma_catalog", user=ADMIN)))
+    assert "Avval test importi" in s.texts() and not lib.jobs
+    run_test_job(bot, dp, s, m, remote_archive)
+    run(feed(bot, dp, private_text("/fma_catalog", user=ADMIN)))
+    assert s.texts().count("Avval test importi") == 2 and m.fma_job() is None  # muvofiqlik hisoboti hali so'ralmagan
+    test_job = next(j for j in lib.jobs.values() if j["settings"]["mode"] == "test")
+    run(feed(bot, dp, cb(f"imp:compliance:{test_job['id']}")))
+    assert test_job["compliance"]["ready_for_bulk"]
+    run(feed(bot, dp, private_text("/fma_catalog", user=USER), private_text("/fma_catalog", user=ADMIN)))
+    job = m.fma_job()
+    assert job["settings"]["mode"] == "manifest" and job["status"] == "collecting"
+    assert sorted(it["fma_id"] for it in job["items"]) == sorted(fma.load_manifest(fma.MANIFEST))
+    before = len(s.of(SendAudio))
+    run(asyncio.sleep(0.05))
+    assert len(s.of(SendAudio)) == before  # ▶️ bosilmaguncha boshlanmaydi
+
+
+def test_dead_source_uses_wayback_and_old_posts_get_caption(tg, audio_bytes, remote_archive, monkeypatch, tmp_path):
+    bot, dp, s, lib, m = tg
+    make_manifest(audio_bytes, remote_archive, monkeypatch, tmp_path, batch=(3, 5))
+
+    async def status(url):
+        return 404 if "freemusicarchive" in url else 200
+
+    async def wayback(url):
+        return "https://web.archive.org/web/2017/" + url if url.endswith("/3/") else None
+    monkeypatch.setattr(m, "_url_status", status)
+    monkeypatch.setattr(m, "_wayback", wayback)
+    job = run_test_job(bot, dp, s, m, remote_archive)
+    t3 = lib.find_existing(provider="fma", external_id="3")
+    t5 = lib.find_existing(provider="fma", external_id="5")
+    assert t3["source_url"].startswith("https://web.archive.org/web/2017/") and t3["source_kind"] == "track-archive"
+    assert t3["source_url_original"] == "http://freemusicarchive.org/music/x/3/" and "web.archive.org" in t3["attribution"]
+    assert t5["source_url"] == "http://freemusicarchive.org/music/x/5/"  # arxiv yo'q -> asl havola qoladi
+    by = {it["fma_id"]: it["chk"] for it in job["items"]}
+    assert by[3]["source_archived"] is True and by[5]["source_archived"] is False
+    run(feed(bot, dp, cb(f"trk:{t3['id']}", user=USER)))
+    assert "Wayback arxiv nusxasi" in s.of(SendMessage)[-1].text
+    # eski (caption'siz) kanal posti qayta tekshiruvda atribusiya oladi
+    run_test_job(bot, dp, s, m, remote_archive)
+    edits = [c for c in s.calls if type(c).__name__ == "EditMessageCaption"]
+    assert {e.message_id for e in edits} >= {t3["msg_id"], t5["msg_id"]} and all("Litsenziya:" in e.caption for e in edits)
