@@ -11,7 +11,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from aiogram.methods import EditMessageText, SendAudio, SendMessage
+from aiogram.methods import EditMessageText, SendAudio, SendDocument, SendMessage
 
 import bot as botmod
 from importer import fma
@@ -483,8 +483,7 @@ def test_remote_audio_source_reads_only_needed(remote_archive, audio_bytes):
     assert f.bytes_fetched < len(RangeHandler.data)  # butun arxiv yuklanmadi
 
 
-def test_fma_test_import_via_bot(tg, audio_bytes, remote_archive, monkeypatch, tmp_path):
-    bot, dp, s, lib, m = tg
+def make_manifest(audio_bytes, remote_archive, monkeypatch, tmp_path, batch=(3, 5, 10, 12, 2)):
     meta = tmp_path / "meta"
     meta.mkdir()
     for f in ("tracks.csv",):
@@ -500,10 +499,18 @@ def test_fma_test_import_via_bot(tg, audio_bytes, remote_archive, monkeypatch, t
     fma_verify.write_csv(rows, out)
     gz = out.with_suffix(".csv.gz")
     gz.write_bytes(gzip.compress(out.read_bytes()))
-    (out.parent / "fma_test_batch.json").write_text(json.dumps([3, 5, 10, 12, 2]))  # 2 = NC, ro'yxatda yo'q
+    (out.parent / "fma_test_batch.json").write_text(json.dumps(list(batch)))  # 2 = NC, ro'yxatda yo'q
     monkeypatch.setattr(fma, "MANIFEST", gz)
     monkeypatch.setattr(fma, "ARCHIVE_URL", remote_archive)
 
+    return gz
+
+
+async def ok_status(url):
+    return 200
+
+
+def run_test_job(bot, dp, s, m, remote_archive, extra=()):
     async def go():
         await feed(bot, dp, private_text("/fma_test", user=ADMIN))
         job = m.fma_job()
@@ -511,17 +518,83 @@ def test_fma_test_import_via_bot(tg, audio_bytes, remote_archive, monkeypatch, t
         assert s.of(SendAudio) == []  # admin boshlamaguncha hech narsa yuklanmaydi
         await feed(bot, dp, cb(f"imp:start:{job['id']}"))
         await m.wait(job["id"])
-        await feed(bot, dp, cb(f"imp:results:{job['id']}"))
+        await feed(bot, dp, *[cb(f"imp:{a}:{job['id']}") for a in extra])
         return job
-    job = run(go())
+    return run(go())
+
+
+def test_fma_test_import_via_bot(tg, audio_bytes, remote_archive, monkeypatch, tmp_path):
+    bot, dp, s, lib, m = tg
+    make_manifest(audio_bytes, remote_archive, monkeypatch, tmp_path)
+    monkeypatch.setattr(m, "_url_status", ok_status)
+    job = run_test_job(bot, dp, s, m, remote_archive, extra=("results", "compliance"))
     by = {it["fma_id"]: it for it in job["items"]}
     assert job["status"] == FINISHED
     assert [by[t]["status"] for t in (3, 5, 10)] == [DONE, DONE, DONE]
     assert by[12]["status"] == FAILED and "sha1" in by[12]["error"]
     assert by[2]["status"] == FAILED and "huquqi noaniq" in by[2]["error"]
-    ups = s.of(SendAudio)
+    ups = [u for u in s.of(SendAudio) if u.chat_id == CHANNEL]
     assert len(ups) == 3 and {u.audio.data for u in ups} == {audio_bytes[3], audio_bytes[5], audio_bytes[10]}
+    # kanal postida atribusiya caption, protect_content yo'q
+    assert all("Litsenziya:" in u.caption and u.protect_content is False for u in ups)
+    assert by[5]["chk"] == {"source_sha1": True, "license_http": 200, "source_http": 200, "caption": True,
+                            "telegram_sha1": True}
     it = lib.find_existing(provider="fma", external_id="3")
-    assert it["source_url"] == "http://freemusicarchive.org/music/x/3/" and it["license_url"]
-    results = s.of(SendMessage)[-1].text
+    assert it["source_url"] == "http://freemusicarchive.org/music/x/3/" and it["unmodified"] and it["sha1"]
+    results = next(c.text for c in s.of(SendMessage) if c.text.startswith("📋 Import"))
     assert "✅ Ozoda — Bahor (CC BY 4.0)" in results and "❌ FMA #12" in results
+    # muvofiqlik hisoboti: CSV hujjat + xulosa
+    doc = [c for c in s.of(SendDocument) if c.document.filename.startswith("fma_compliance")][-1]
+    assert "Telegram'dagi nusxa asl fayl bilan bir xil (sha1): 3/3" in doc.caption
+    assert "hali mumkin emas" in doc.caption  # 2 ta xato bor
+    rows = list(csv.DictReader(io.StringIO(doc.document.data.decode("utf-8-sig"))))
+    nd = next(r for r in rows if r["fma_id"] == "5")
+    assert (nd["license_code"], nd["nd_unmodified"], nd["telegram_copy_sha1_match"]) == ("by-nd", "ha", "ha")
+    sa = next(r for r in rows if r["fma_id"] == "15") if any(r["fma_id"] == "15" for r in rows) else None
+    assert sa is None  # 15 test ro'yxatida emas
+
+
+def test_delivery_has_attribution_buttons_and_info_page(tg, audio_bytes, remote_archive, monkeypatch, tmp_path):
+    bot, dp, s, lib, m = tg
+    make_manifest(audio_bytes, remote_archive, monkeypatch, tmp_path, batch=(5,))
+    monkeypatch.setattr(m, "_url_status", ok_status)
+    run_test_job(bot, dp, s, m, remote_archive)
+    it = lib.find_existing(provider="fma", external_id="5")
+    run(feed(bot, dp, cb(f"l:{it['id']}", user=USER), cb(f"trk:{it['id']}", user=USER)))
+    sent = s.of(SendAudio)[-1]
+    assert sent.chat_id == USER and sent.audio == it["file_id"] and sent.protect_content is False
+    assert "CC BY-ND 4.0" in sent.caption and "Ivan" in sent.caption
+    buttons = [b for row in sent.reply_markup.inline_keyboard for b in row]
+    assert buttons[0].url == "https://creativecommons.org/licenses/by-nd/4.0/"
+    assert buttons[1].url == "http://freemusicarchive.org/music/x/5/" and buttons[2].callback_data == f"trk:{it['id']}"
+    info = s.of(SendMessage)[-1].text
+    assert "NoDerivatives" in info and "o'zgartirilmagan" in info and "DRM" in info
+
+
+def test_tampered_telegram_copy_is_removed(tg, audio_bytes, remote_archive, monkeypatch, tmp_path):
+    bot, dp, s, lib, m = tg
+    make_manifest(audio_bytes, remote_archive, monkeypatch, tmp_path, batch=(3, 5))
+    monkeypatch.setattr(m, "_url_status", ok_status)
+    s.tamper = lambda data: data + b"x"  # Telegram nusxasi asl fayldan farq qilsa
+    job = run_test_job(bot, dp, s, m, remote_archive)
+    assert [it["status"] for it in job["items"]] == [FAILED, FAILED]
+    assert all("farq qiladi" in it["error"] for it in job["items"])
+    assert lib.active() == []  # bazadan o'chirildi, foydalanuvchilarga yuborilmaydi
+    assert any(type(c).__name__ == "DeleteMessage" for c in s.calls)
+
+
+def test_dead_license_url_blocks_upload(tg, audio_bytes, remote_archive, monkeypatch, tmp_path):
+    bot, dp, s, lib, m = tg
+    make_manifest(audio_bytes, remote_archive, monkeypatch, tmp_path, batch=(3,))
+
+    async def status(url):
+        return 404 if "creativecommons" in url else 200
+    monkeypatch.setattr(m, "_url_status", status)
+    job = run_test_job(bot, dp, s, m, remote_archive)
+    assert job["items"][0]["status"] == FAILED and "litsenziya sahifasi" in job["items"][0]["error"]
+    assert [u for u in s.of(SendAudio) if u.chat_id == CHANNEL] == []
+
+
+def test_url_status_only_known_hosts(tg):
+    bot, dp, s, lib, m = tg
+    assert run(m._url_status("https://evil.example/x")) == -1 and run(m._url_status("")) == -1

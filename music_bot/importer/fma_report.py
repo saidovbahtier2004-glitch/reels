@@ -56,10 +56,15 @@ def load_raw(path: Path) -> dict[int, dict]:
         for r in csv.DictReader(fh):
             tid = (r.get("track_id") or "").strip()
             if tid.isdigit():
+                tf = (r.get("track_file") or "").strip()
                 out[int(tid)] = {"license_title": (r.get("license_title") or "").strip(),
                                  "license_url": (r.get("license_url") or "").strip(),
                                  "track_url": (r.get("track_url") or "").strip(),
-                                 "artist_url": (r.get("artist_url") or "").strip()}
+                                 "album_url": (r.get("album_url") or "").strip(),
+                                 "artist_url": (r.get("artist_url") or "").strip(),
+                                 "curator": (tf.split("/") + ["", ""])[1] if tf.startswith("music/") else "",
+                                 "context": " ".join((r.get(k) or "") for k in
+                                                     ("track_information", "album_title", "artist_website"))[:3000]}
     return out
 
 

@@ -37,6 +37,7 @@ class FakeSession(BaseSession):
         self.next_id = 1000
         self.files: dict[str, bytes] = {}  # file_id -> yuklab olinadigan baytlar
         self.docs: dict[int, Message] = {}   # kanaldagi hujjat xabarlari (msg_id -> Message)
+        self.tamper = lambda data: data      # testlarda: Telegram faylni buzgan holatni sinash
         self.pinned: int | None = None
 
     async def close(self) -> None:
@@ -79,6 +80,7 @@ class FakeSession(BaseSession):
             self.next_id += 1
             if isinstance(method.audio, InputFile):
                 fid, uid = f"UP{self.next_id}", f"UPU{self.next_id}"
+                self.files[fid] = self.tamper(method.audio.data)  # Telegram faylni saqlaydi
             else:
                 fid, uid = method.audio, "U_" + method.audio
             return Message(message_id=self.next_id, date=dt.datetime.now(),

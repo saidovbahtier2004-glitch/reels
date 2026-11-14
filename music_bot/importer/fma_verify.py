@@ -22,6 +22,7 @@ import argparse
 import ast
 import csv
 import json
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -35,9 +36,15 @@ ARCHIVE_URL = "https://os.unil.cloud.switch.ch/fma/fma_full.zip"
 DATASET_URL = "https://github.com/mdeff/fma"
 LANG_NAMES = dict(LANG_CATEGORIES) | {"unspecified": "belgilanmagan"}
 
+# Boshqalarning tarixiy yozuvlarini (78 rpm plastinkalar va h.k.) yuklagan arxiv kuratorlari:
+# yuklovchi asl yozuvning huquq egasi emas — CC belgisi bo'lsa ham huquq noaniq.
+ARCHIVAL_CURATORS = {"Excavated_Shellac"}
+ARCHIVAL_HINTS = re.compile(r"\b78\s?rpm|\b78s?\b|shellac|cylinder|gramophone|piano roll|"
+                            r"recorded (in|around|circa) (18|19[0-5])\d|public domain|archive\.org", re.I)
+
 COLUMNS = ["fma_id", "status", "reason", "title", "artist", "album", "language_code", "language", "genre_top",
            "genres", "license", "license_code", "license_title", "license_url", "attribution", "source_url",
-           "artist_url", "audio_member", "audio_bytes", "audio_sha1", "duration"]
+           "source_kind", "artist_url", "curator", "audio_member", "audio_bytes", "audio_sha1", "duration"]
 
 
 def member_name(fma_id: int) -> str:
@@ -88,6 +95,13 @@ def verify(folder: Path, index: dict[str, int], checksums: dict[str, str], comme
         title, artist = (rec.get("track.title") or "").strip(), (rec.get("artist.name") or "").strip()
         if not title or not artist:
             problems.append("nom yoki ijrochi yo'q")
+        if lic.code == "pdm":
+            problems.append("Public Domain Mark — litsenziya emas, belgi; ruxsat etilgan ro'yxatda yo'q")
+        curator = r.get("curator", "")
+        if curator in ARCHIVAL_CURATORS:
+            problems.append(f"arxiv to'plami ({curator}): yuklovchi asl yozuvning huquq egasi emas")
+        elif ARCHIVAL_HINTS.search(r.get("context", "")):
+            problems.append("tavsifda tarixiy/arxiv yozuv belgilari — huquq egasi noaniq")
         member = member_name(tid)
         size = index.get(member)
         sha1 = checksums.get(member, "")
@@ -112,7 +126,13 @@ def verify(folder: Path, index: dict[str, int], checksums: dict[str, str], comme
         except (ValueError, SyntaxError):
             gids = []
         lang_code = (rec.get("track.language_code") or "").strip().lower()
-        source_url = r.get("track_url", "")
+        source_url, source_kind = r.get("track_url", ""), "track"
+        if not source_url:  # trek sahifasi yo'q bo'lsa — albom, keyin artist sahifasi
+            source_url, source_kind = (r.get("album_url", ""), "album") if r.get("album_url") else \
+                (r.get("artist_url", ""), "artist")
+        if not source_url:
+            source_kind = ""
+            tech.append("manba URL'i yo'q")
         rows.append({
             "fma_id": tid, "status": status, "reason": "; ".join(problems + tech),
             "title": title, "artist": artist, "album": (rec.get("album.title") or "").strip(),
@@ -121,7 +141,8 @@ def verify(folder: Path, index: dict[str, int], checksums: dict[str, str], comme
             "genres": ", ".join(gnames.get(str(g), str(g)) for g in gids),
             "license": lic.short, "license_code": lic.code, "license_title": lic.title, "license_url": lic.url,
             "attribution": attribution(title, artist, lic, "Free Music Archive", source_url),
-            "source_url": source_url, "artist_url": r.get("artist_url", ""),
+            "source_url": source_url, "source_kind": source_kind, "artist_url": r.get("artist_url", ""),
+            "curator": curator,
             "audio_member": member if size else "", "audio_bytes": size or 0, "audio_sha1": sha1,
             "duration": rec.get("track.duration", ""),
         })

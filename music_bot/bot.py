@@ -598,13 +598,68 @@ async def show_results(message: Message, query: str, index: int = 0, edit: bool 
         await message.answer(text, reply_markup=kb)
 
 
+def _http_url(u: str | None) -> str | None:
+    return u if u and u.startswith(("http://", "https://")) else None
+
+
+def track_info_keyboard(it: dict) -> InlineKeyboardMarkup | None:
+    """CC treklar uchun: litsenziya, manba va to'liq ma'lumot tugmalari."""
+    if not it.get("license_code") and not it.get("attribution"):
+        return None
+    row = []
+    if _http_url(it.get("license_url")):
+        row.append(InlineKeyboardButton(text="📜 Litsenziya", url=it["license_url"]))
+    if _http_url(it.get("source_url")):
+        row.append(InlineKeyboardButton(text="🔗 Manba", url=it["source_url"]))
+    rows = [row] if row else []
+    rows.append([InlineKeyboardButton(text="ℹ️ Ma'lumot", callback_data=f"trk:{it['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+LICENSE_NOTES = {
+    "by-sa": ("ShareAlike: bu asardan yaratilgan har qanday moslashtirish (remiks va h.k.) ham "
+              "aynan shu litsenziya ostida tarqatilishi shart."),
+    "by-nd": "NoDerivatives: asar faqat asl holida tarqatiladi, o'zgartirish taqiqlangan.",
+    "cc0": "CC0: muallif barcha huquqlardan voz kechgan.",
+}
+
+
+def track_info_text(it: dict) -> str:
+    kind = {"track": "trek sahifasi", "album": "albom sahifasi", "artist": "ijrochi sahifasi"}.get(
+        it.get("source_kind", ""), "sahifa")
+    lines = [f"ℹ️ <b>{esc(it['artist'])} — {esc(it['title'])}</b>"]
+    if it.get("album"):
+        lines.append(f"💿 Albom: {esc(it['album'])}")
+    lines.append(f"\n📜 Litsenziya: <b>{esc(it.get('license_id') or it.get('license_title'))}</b>")
+    if it.get("license_url"):
+        lines.append(f"🔗 {esc(it['license_url'])}")
+    if it.get("source"):
+        lines.append(f"\n🌐 Manba: {esc(it['source'])}" + (f" ({kind})" if it.get("source_url") else ""))
+        if it.get("source_url"):
+            lines.append(f"🔗 {esc(it['source_url'])}")
+    if it.get("artist_url") and it.get("artist_url") != it.get("source_url"):
+        lines.append(f"👤 Ijrochi: {esc(it['artist_url'])}")
+    if it.get("unmodified"):
+        lines.append("\n✅ Fayl o'zgartirilmagan: manbadagi asl MP3 aynan o'zi"
+                     + (f" (sha1 {esc(it['sha1'][:12])}…)" if it.get("sha1") else ""))
+    note = LICENSE_NOTES.get((it.get("license_code") or "").replace("-nc", ""))
+    if note:
+        lines.append(f"⚖️ {note}")
+    if it.get("license_code", "").startswith("by"):
+        lines.append("Qayta tarqatishda muallif, nom, manba va litsenziyani ko'rsating.")
+    lines.append("Bot faylga qo'shimcha cheklov (DRM) qo'ymaydi.")
+    return "\n".join(lines)
+
+
 async def send_library_item(message: Message, it: dict) -> None:
     """Bazadagi qo'shiqni serverga yuklamasdan, file_id orqali yuboradi."""
     caption = f"🎵 <b>{esc(it['artist'])} — {esc(it['title'])}</b>"
     if it.get("attribution"):  # CC litsenziyali treklar: muallif, manba, litsenziya
         caption += f"\n\n<i>{esc(it['attribution'])}</i>"
     try:
-        await message.answer_audio(it["file_id"], caption=caption)
+        # protect_content ishlatilmaydi: CC litsenziyalari texnik cheklov qo'yishni taqiqlaydi
+        await message.answer_audio(it["file_id"], caption=caption[:1024], reply_markup=track_info_keyboard(it),
+                                   protect_content=False)
     except Exception:
         log.exception("Kutubxona audiosini yuborib bo'lmadi #%s", it.get("id"))
         await message.answer("❌ Qo'shiqni yuborib bo'lmadi.")
@@ -954,6 +1009,16 @@ async def admin_buttons(cb: CallbackQuery) -> None:
     except Exception:
         log.exception("Admin tugmasida xato: %s", cb.data)
         await cb.message.answer("❌ Xato bo'ldi, logni ko'ring.")
+
+
+@router.callback_query(F.data.startswith("trk:"))
+async def on_track_info(cb: CallbackQuery) -> None:
+    it = library.get(int(cb.data[4:]))
+    if not it:
+        await cb.answer("Bu qo'shiq o'chirilgan.", show_alert=True)
+        return
+    await cb.answer()
+    await cb.message.answer(track_info_text(it), disable_web_page_preview=True)
 
 
 # ---- Kutubxona kanali ----

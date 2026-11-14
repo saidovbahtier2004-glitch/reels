@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import logging
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
@@ -446,6 +447,34 @@ class ImportManager:
         if state:
             state[1].close()
 
+    URL_CHECK_HOSTS = {"creativecommons.org", "freemusicarchive.org"}
+
+    async def _url_status(self, url: str) -> int:
+        """Sahifa ochiladimi (HTTP holati). Faqat litsenziya va FMA hostlari; xato bo'lsa 0."""
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower()
+        if not url or host not in self.URL_CHECK_HOSTS:
+            return -1  # tekshirilmadi
+        import aiohttp
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as s:
+                async with s.head(url, allow_redirects=True) as r:
+                    if r.status in (403, 405):
+                        async with s.get(url, allow_redirects=True) as g:
+                            return g.status
+                    return r.status
+        except Exception as e:  # noqa: BLE001
+            log.warning("URL tekshiruvi xatosi %s: %s", url, e)
+            return 0
+
+    async def _roundtrip_sha1(self, msg: Message) -> str | None:
+        """Telegram'ga yuklangan faylni qayta olib sha1'ini hisoblaydi (bot API: <= 20 MB)."""
+        audio = msg.audio or msg.document
+        if audio is None or (audio.file_size or 0) > 20 * 1024 * 1024:
+            return None
+        buf = await self.bot.download(audio.file_id)
+        return hashlib.sha1(buf.read()).hexdigest()
+
     async def _process_fma(self, job: dict, item: dict) -> None:
         cands, audio, policy = self._fma[job["id"]]
         lib = self.library
@@ -481,13 +510,37 @@ class ImportManager:
                 item.update(status=SKIPPED, error="bazada bor (bir xil fayl)", lib_id=dup["id"])
                 return
             track = TrackMeta(title=c.title, artist=c.artist, license_id=c.license.short, duration=c.duration)
+            chk = {"source_sha1": bool(c.sha1)}
+            settings = fma.Settings.from_dict(job["settings"])
+            if settings.mode == "test" or settings.verify_urls:
+                chk["license_http"] = await self._url_status(c.license.url)
+                chk["source_http"] = await self._url_status(c.source_url)
+                if chk["license_http"] not in (200, -1):
+                    item["chk"] = chk
+                    self._fail(job, item, f"litsenziya sahifasi ochilmadi (HTTP {chk['license_http']})")
+                    return
             name = f"{c.artist} - {c.title}.mp3".replace("/", "_")[:120]
+            caption = html.escape(c.attribution(), quote=False)[:1000]
             async with self._upload_lock:
                 # Fayl o'zgartirilmaydi (CC BY-ND talabi): aynan MP3 baytlari yuboriladi
-                msg = await self._upload(track, file_id=None, audio=AudioFile(data, name))
-                added = await lib.add(self.bot, msg, extra=c.library_extra() | {"sha256": sha,
-                                                                               "import_job": job["id"]})
+                msg = await self._upload(track, file_id=None, audio=AudioFile(data, name), caption=caption)
+                added = await lib.add(self.bot, msg, extra=c.library_extra() | {
+                    "sha256": sha, "sha1": c.sha1, "unmodified": True, "import_job": job["id"]})
                 await asyncio.sleep(self.delay)
+            chk["caption"] = bool(caption)
+            tg_sha1 = await self._roundtrip_sha1(msg)
+            chk["telegram_sha1"] = None if tg_sha1 is None else tg_sha1 == hashlib.sha1(data).hexdigest()
+            item["chk"] = chk
+            if chk["telegram_sha1"] is False:
+                # Telegram'dagi nusxa asl fayldan farq qiladi -> tarqatmaymiz
+                if added is not None:
+                    await lib.remove(self.bot, added)
+                try:
+                    await self.bot.delete_message(lib.chat_id, msg.message_id)
+                except Exception:  # noqa: BLE001
+                    pass
+                item.update(status=FAILED, error="Telegram'dagi fayl asl nusxadan farq qiladi", permanent=True)
+                return
             if added is None:
                 item.update(status=SKIPPED, error="bazada bor (bir xil fayl)")
             else:
@@ -575,13 +628,16 @@ class ImportManager:
             label = f"{tr.get('artist')} — {tr.get('title')}" if tr else f"FMA #{item.get('fma_id')}"
             self.note(job, f"#{item['n']} {label}: {error}")
 
-    async def _upload(self, track: TrackMeta, *, file_id: str | None, audio: AudioFile | None) -> Message:
+    async def _upload(self, track: TrackMeta, *, file_id: str | None, audio: AudioFile | None,
+                      caption: str | None = None) -> Message:
         media = file_id or BufferedInputFile(audio.data, audio.filename)
         for attempt in range(5):
             try:
+                # protect_content ishlatilmaydi: CC litsenziyalari qo'shimcha texnik cheklovlarni taqiqlaydi
                 return await self.bot.send_audio(
                     self.library.chat_id, media, title=track.title, performer=track.artist,
-                    duration=track.duration or None, disable_notification=True,
+                    duration=track.duration or None, disable_notification=True, caption=caption,
+                    protect_content=False,
                 )
             except TelegramRetryAfter as e:
                 log.info("Telegram limiti: %s soniya kutamiz", e.retry_after)

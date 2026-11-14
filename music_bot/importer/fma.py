@@ -66,6 +66,7 @@ class Candidate:
     source_url: str = ""        # FMA'ning o'zi bergan trek URL'i (raw_tracks.csv); bo'lmasa bo'sh
     sha1: str = ""              # rasmiy fma_full/checksums
     audio_bytes: int = 0
+    source_kind: str = ""       # track | album | artist
 
     def attribution(self) -> str:
         if self.source_url:
@@ -79,7 +80,8 @@ class Candidate:
             "provider": "fma", "external_id": str(self.fma_id), "genre": self.genre,
             "language": self.language, "license_id": self.license.short, "license_code": self.license.code,
             "license_title": self.license.title, "license_url": self.license.url,
-            "source": "Free Music Archive", "source_url": self.source_url, "dataset_url": DATASET_URL,
+            "source": "Free Music Archive", "source_url": self.source_url, "source_kind": self.source_kind,
+            "dataset_url": DATASET_URL,
             "artist_url": self.artist_url, "attribution": self.attribution(),
         }
 
@@ -214,6 +216,7 @@ class Settings:
     manifest: str = ""                           # bo'sh emas -> metadata manifestdan, faqat "verified"
     ids: tuple[int, ...] = ()                    # test importi uchun aniq treklar
     mode: str = "catalog"                        # catalog | test
+    verify_urls: bool = False                    # test rejimida doim tekshiriladi
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -231,12 +234,14 @@ class Settings:
     def to_dict(self) -> dict:
         return {"metadata": self.metadata, "audio": self.audio, "commercial": self.commercial,
                 "genres": list(self.genres), "languages": list(self.languages), "target": self.target,
-                "manifest": self.manifest, "ids": list(self.ids), "mode": self.mode}
+                "manifest": self.manifest, "ids": list(self.ids), "mode": self.mode,
+                "verify_urls": self.verify_urls}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Settings":
         return cls(d["metadata"], d["audio"], d["commercial"], tuple(d["genres"]), tuple(d["languages"]),
-                   d["target"], d.get("manifest", ""), tuple(d.get("ids", ())), d.get("mode", "catalog"))
+                   d["target"], d.get("manifest", ""), tuple(d.get("ids", ())), d.get("mode", "catalog"),
+                   d.get("verify_urls", False))
 
 
 @dataclass
@@ -348,6 +353,7 @@ def load_manifest(path: Path, ids: set[int] | None = None) -> dict[int, Candidat
             duration=duration, license=parse_license(r["license_title"], r["license_url"]),
             artist_url=r.get("artist_url", ""), source_url=r.get("source_url", ""),
             sha1=r.get("audio_sha1", ""), audio_bytes=int(r.get("audio_bytes") or 0),
+            source_kind=r.get("source_kind", ""),
         )
     return out
 

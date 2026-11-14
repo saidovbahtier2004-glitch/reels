@@ -198,8 +198,18 @@ Har bir trek uchun litsenziya nomi va URL'i alohida solishtiriladi, siyosat teks
 manifest `reports/fma_verified_tracks.csv.gz` (bot shundan o'qiydi), test ro'yxati `reports/fma_test_batch.json`.
 Faqat `verified` holatidagi treklar yuklanadi.
 
+**Huquqi noaniq deb belgilanadigan treklar** (yuklanmaydi): arxiv to'plamlari (masalan, Excavated Shellac: eski 78 rpm
+plastinkalar, yuklovchi huquq egasi emas), tavsifida tarixiy yozuv belgilari bor treklar va Public Domain Mark
+(belgi, litsenziya emas).
+
+**Muvofiqlik:** FMA treklari o'zgartirilmasdan yuboriladi. Yuklashdan oldin rasmiy sha1, yuklagandan keyin
+Telegram'dagi nusxaning sha1'i tekshiriladi va farq bo'lsa trek o'chiriladi. Kanal posti va foydalanuvchiga yuboriladigan
+audio caption'ida atribusiya bo'ladi, ostida **📜 Litsenziya**, **🔗 Manba** va **ℹ️ Ma'lumot** tugmalari turadi.
+`protect_content=False` aniq beriladi. Test rejimida litsenziya va manba sahifalari jonli tekshiriladi.
+Hisobot: [reports/fma_test_compliance_report.md](reports/fma_test_compliance_report.md).
+
 **Test importi:** botda `/fma_test` → **▶️ Importni boshlash**. 20 ta trek rasmiy arxivdan Range bilan olinadi,
-sha1 tekshiriladi va o'zgartirilmasdan kanalga yuboriladi. **📋 Natijalar** tugmasi har bir trekning holatini ko'rsatadi.
+sha1 tekshiriladi va o'zgartirilmasdan kanalga yuboriladi. **📋 Natijalar** tugmasi har bir trekning holatini ko'rsatadi, **📄 Muvofiqlik hisoboti** esa CSV va xulosa yuboradi.
 Butun katalog importi test natijalari ko'rib chiqilgandan keyin alohida yoqiladi.
 
 **Jarayon** (`/fma`):

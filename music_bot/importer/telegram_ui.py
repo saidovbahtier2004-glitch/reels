@@ -20,7 +20,8 @@ from typing import Callable
 
 from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
+                           Message)
 
 from .csv_import import parse_csv
 from .vault import MAX_UPLOAD_BYTES, VaultError, safe_folder, scan_folder, scan_zip
@@ -122,6 +123,74 @@ def progress_text(job: dict, delay: float = 3.5) -> str:
     return "\n".join(lines)
 
 
+COMPLIANCE_COLUMNS = ["fma_id", "artist", "title", "import_status", "license", "license_code", "license_url",
+                      "license_url_http", "source_url", "source_kind", "source_url_http", "source_sha1_verified",
+                      "telegram_copy_sha1_match", "attribution_in_caption", "nd_unmodified", "sa_obligations",
+                      "library_id", "error"]
+
+
+def compliance_rows(job: dict, library) -> tuple[list[dict], dict]:
+    """Import natijasidan har bir trek bo'yicha muvofiqlik qatorlari va xulosa."""
+    ids = {it["fma_id"] for it in job["items"]}
+    try:
+        cands = fma.load_manifest(fma.manifest_path(job["settings"].get("manifest", "builtin")), ids)
+    except Exception:  # noqa: BLE001
+        cands = {}
+    rows = []
+    for it in job["items"]:
+        c = cands.get(it["fma_id"])
+        li = library.get(it["lib_id"]) if it.get("lib_id") else None
+        chk = it.get("chk") or {}
+        code = c.license.code if c else ""
+        tg = chk.get("telegram_sha1")
+        rows.append({
+            "fma_id": it["fma_id"], "artist": c.artist if c else "", "title": c.title if c else "",
+            "import_status": it["status"], "license": c.license.short if c else "", "license_code": code,
+            "license_url": c.license.url if c else "", "license_url_http": chk.get("license_http", ""),
+            "source_url": c.source_url if c else "", "source_kind": c.source_kind if c else "",
+            "source_url_http": chk.get("source_http", ""), "source_sha1_verified": chk.get("source_sha1", ""),
+            "telegram_copy_sha1_match": {True: "ha", False: "YO'Q", None: "tekshirilmadi (>20 MB)"}.get(tg, ""),
+            "attribution_in_caption": "ha" if chk.get("caption") else "",
+            "nd_unmodified": ("ha" if tg else "tekshirilmadi") if code.endswith("-nd") and it["status"] == DONE else
+                             ("" if not code.endswith("-nd") else "-"),
+            "sa_obligations": ("asl holida, litsenziya va manba ko'rsatilgan" if code.endswith("-sa")
+                               and it["status"] == DONE else ""),
+            "library_id": li["id"] if li else "", "error": it.get("error") or "",
+        })
+    done = [r for r in rows if r["import_status"] == DONE]
+    summary = {
+        "total": len(rows), "done": len(done), "failed": sum(r["import_status"] == FAILED for r in rows),
+        "skipped": sum(r["import_status"] == SKIPPED for r in rows),
+        "license_ok": sum(r["license_url_http"] == 200 for r in done),
+        "source_ok": sum(r["source_url_http"] == 200 for r in done),
+        "tg_match": sum(r["telegram_copy_sha1_match"] == "ha" for r in done),
+        "tg_unchecked": sum(r["telegram_copy_sha1_match"].startswith("tekshirilmadi") for r in done),
+        "caption": sum(r["attribution_in_caption"] == "ha" for r in done),
+        "nd": sum(r["license_code"].endswith("-nd") for r in done),
+        "sa": sum(r["license_code"].endswith("-sa") for r in done),
+    }
+    summary["ready_for_bulk"] = (summary["failed"] == 0 and summary["done"] == summary["total"]
+                                 and summary["tg_match"] == summary["done"]
+                                 and summary["caption"] == summary["done"]
+                                 and summary["license_ok"] == summary["done"])
+    return rows, summary
+
+
+def compliance_text(job: dict, sm: dict) -> str:
+    ok = "✅" if sm["ready_for_bulk"] else "⚠️"
+    return "\n".join([
+        f"📄 <b>Muvofiqlik hisoboti — import #{job['id']}</b>\n",
+        f"Treklar: {sm['total']} · ✅ {sm['done']} · ⏭ {sm['skipped']} · ❌ {sm['failed']}",
+        f"📜 Litsenziya sahifasi ochildi: {sm['license_ok']}/{sm['done']}",
+        f"🌐 Manba sahifasi ochildi: {sm['source_ok']}/{sm['done']}",
+        f"🔒 Telegram'dagi nusxa asl fayl bilan bir xil (sha1): {sm['tg_match']}/{sm['done']}"
+        + (f" (tekshirilmagan: {sm['tg_unchecked']})" if sm["tg_unchecked"] else ""),
+        f"🏷 Atribusiya caption'da: {sm['caption']}/{sm['done']}",
+        f"BY-ND treklar: {sm['nd']} (o'zgartirilmagan) · BY-SA treklar: {sm['sa']}",
+        f"\n{ok} Qolgan katalog importi: <b>{'mumkin' if sm['ready_for_bulk'] else 'hali mumkin emas'}</b>",
+    ])
+
+
 def scan_report(name: str, files: list, skipped: list[str], res: dict) -> str:
     lines = [f"🗂 <b>{esc(name)}</b>",
              f"🎵 Audio topildi: {len(files)}   ➕ Qo'shildi: {res['added'] - res['in_library']}",
@@ -152,7 +221,7 @@ def screen_kb(job: dict) -> InlineKeyboardMarkup:
         rows.append([b("🔄 Yangilash", "refresh")])
     extra = []
     if job["kind"] == "fma" and job.get("settings", {}).get("mode") == "test" and st in (FINISHED, PAUSED):
-        rows.append([b("📋 Natijalar", "results")])
+        rows.append([b("📋 Natijalar", "results"), b("📄 Muvofiqlik hisoboti", "compliance")])
     if c[FAILED]:
         extra.append(b(f"📋 Xatolar ({c[FAILED]})", "failed"))
     if c[WAITING]:
@@ -656,6 +725,21 @@ def build_router(manager: ImportManager, is_admin: Callable[[int | None], bool])
         elif action == "cancel":
             manager.cancel(job)
             note = "Bekor qilindi"
+        elif action == "compliance":
+            import csv as _csv
+            import io as _io
+            rows, sm = compliance_rows(job, manager.library)
+            buf = _io.StringIO()
+            w = _csv.DictWriter(buf, fieldnames=COMPLIANCE_COLUMNS)
+            w.writeheader()
+            w.writerows(rows)
+            job["compliance"] = sm
+            manager.save(job)
+            await cb.answer()
+            await cb.message.answer_document(
+                BufferedInputFile(("\ufeff" + buf.getvalue()).encode("utf-8"), f"fma_compliance_import{job['id']}.csv"),
+                caption=compliance_text(job, sm))
+            return
         elif action == "results":
             lib = manager.library
             lines = [f"📋 Import #{job['id']} natijalari\n"]
