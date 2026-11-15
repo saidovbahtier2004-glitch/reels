@@ -784,13 +784,93 @@ async def on_media(message: Message) -> None:
         )
 
 
+# --------------------------------------------------------------------------- #
+# Havoladan qo'shiq nomi (video/audio YUKLANMAYDI — faqat rasmiy oEmbed metadata)
+# --------------------------------------------------------------------------- #
+OEMBED = {
+    "youtube": "https://www.youtube.com/oembed",
+    "tiktok": "https://www.tiktok.com/oembed",
+}
+
+
+def link_platform(url: str) -> str | None:
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    host = host[4:] if host.startswith("www.") else host
+    if host in ("youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"):
+        return "youtube"
+    if host == "tiktok.com" or host.endswith(".tiktok.com"):
+        return "tiktok"
+    if host in ("instagram.com", "instagr.am"):
+        return "instagram"
+    return None
+
+
+NOISE = re.compile(r"[\(\[](?:official|music|lyric|audio|video|clip|klip|mood|hd|4k|premiere|"
+                   r"jonli|live|remix version)[^\)\]]*[\)\]]", re.I)
+
+
+def clean_query(title: str, author: str = "") -> str:
+    """'Shoxruxbek Ergashev - Charchadim ona (Official Video)' -> 'Shoxruxbek Ergashev Charchadim ona'."""
+    t = re.split(r"\s[|｜/]\s", title or "")[0]                     # "A | A (Official)" -> "A"
+    t = NOISE.sub(" ", t)
+    t = re.sub(r"\b(4k|hd|hq|1080p|720p|full)\b", " ", t, flags=re.I)
+    t = re.sub(r"#\S+|@\S+|https?://\S+", " ", t)                 # heshteglar, belgilar, havolalar
+    t = re.sub(r"[^\w\s'ʻʼ‘’&.-]", " ", t)                         # emoji va boshqa belgilar
+    t = re.sub(r"\b(official|video|audio|lyrics?|klip|clip|music video|premyera)\b", " ", t, flags=re.I)
+    author = re.sub(r"\s*-\s*Topic$|VEVO$|\bofficial\b", "", author or "", flags=re.I).strip()
+    t = re.sub(r"\s+", " ", t.replace(" - ", " ")).strip(" -.")
+    if author and norm(author) not in norm(t):
+        t = f"{author} {t}"
+    return t[:100]
+
+
+async def link_metadata(url: str) -> tuple[str, str] | None:
+    """YouTube/TikTok rasmiy oEmbed: (nom, muallif). Video yoki audio yuklanmaydi."""
+    platform = link_platform(url)
+    if platform not in OEMBED or http is None:
+        return None
+    try:
+        async with http.get(OEMBED[platform], params={"url": url, "format": "json"}) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json(content_type=None)
+        return (data.get("title") or "").strip(), (data.get("author_name") or "").strip()
+    except Exception:
+        log.exception("oEmbed xatosi: %s", url)
+        return None
+
+
+async def on_link(message: Message, url: str) -> None:
+    platform = link_platform(url)
+    if platform is None:
+        await message.answer("🔗 Bu havolani tanimadim. Qo'shiq nomini yozing yoki videoning o'zini yuboring.")
+        return
+    if platform == "instagram":
+        await message.answer("📸 Instagram havolasidan qo'shiq nomini aniqlab bo'lmaydi.\n"
+                             "Reels'ni yuklab olib, videoning o'zini yuboring — qo'shiqni tinglab topaman.")
+        return
+    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+    meta = await link_metadata(url)
+    # TikTok'da muallif — videoni yuklagan foydalanuvchi, ijrochi emas
+    query = clean_query(meta[0], meta[1] if platform == "youtube" else "") if meta else ""
+    if not query:
+        await message.answer("😕 Havoladan nomini aniqlay olmadim. Qo'shiq nomini yozing yoki videoni yuboring.")
+        return
+    await message.answer(f"🔗 Havoladan aniqlandi: <b>{esc(query)}</b>")
+    last_query[message.chat.id] = query
+    try:
+        await show_results(message, query)
+    except Exception:
+        log.exception("Qidiruv xatosi")
+        await message.answer("❌ Qidiruvda xato bo'ldi, keyinroq urinib ko'ring.")
+
+
 @router.message(F.text & ~F.text.startswith("/"))
 async def on_text(message: Message) -> None:
     query = message.text.strip()
-    if query.startswith(("http://", "https://")):
-        await message.answer(
-            "🔗 Havola orqali emas — videoning o'zini yuboring (yoki qo'shiq nomini yozing)."
-        )
+    url_match = re.search(r"https?://\S+", query)
+    if url_match:
+        await on_link(message, url_match.group(0))
         return
     last_query[message.chat.id] = query
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)

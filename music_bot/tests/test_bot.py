@@ -436,3 +436,47 @@ def test_unknown_command_gets_reply_and_version(env, monkeypatch):
     assert "faqat adminlar" in out          # /vault oddiy foydalanuvchiga
     assert "Admin panel" in out             # mavjud buyruqlarni fallback ushlamaydi
     assert out.count("degan buyruq yo'q") == 1
+
+
+# --------------------------------------------------------------------------- #
+# Havoladan qo'shiq nomi (oEmbed metadata, video/audio yuklanmaydi)
+# --------------------------------------------------------------------------- #
+def test_youtube_link_searches_by_title(env, monkeypatch):
+    bot, dp, s, lib = env
+    seen = []
+
+    async def meta(url):
+        seen.append(url)
+        return "Charchadim ona", "Shoxruxbek Ergashev - Topic"
+    monkeypatch.setattr(botmod, "link_metadata", meta)
+    run(feed(bot, dp, channel_audio(1, "a", title="Charchadim ona", performer="Shoxruxbek Ergashev"),
+             private_text("https://youtu.be/NeEAEwCNaqg?si=NVgpHO8ggUgbOk6X")))
+    out = s.texts()
+    assert "Havoladan aniqlandi: <b>Shoxruxbek Ergashev Charchadim ona</b>" in out
+    assert "1.</b> 🎧 Shoxruxbek Ergashev - Charchadim ona" in out
+    assert seen == ["https://youtu.be/NeEAEwCNaqg?si=NVgpHO8ggUgbOk6X"]
+    assert not any(type(c).__name__ in ("SendAudio", "GetFile") for c in s.calls)  # hech narsa yuklanmadi
+
+
+def test_tiktok_link_ignores_uploader_and_other_links(env, monkeypatch):
+    bot, dp, s, lib = env
+
+    async def meta(url):
+        return "sevgi qoshiq 😍🔥 #uzbek #fyp", "random_user"
+    monkeypatch.setattr(botmod, "link_metadata", meta)
+    run(feed(bot, dp, private_text("https://vm.tiktok.com/ZMabc/"),
+             private_text("https://www.instagram.com/reel/abc/"),
+             private_text("https://example.com/x")))
+    out = s.texts()
+    assert "Havoladan aniqlandi: <b>sevgi qoshiq</b>" in out
+    assert "Instagram havolasidan" in out and "Bu havolani tanimadim" in out
+
+
+def test_link_without_metadata(env, monkeypatch):
+    bot, dp, s, lib = env
+
+    async def meta(url):
+        return None
+    monkeypatch.setattr(botmod, "link_metadata", meta)
+    run(feed(bot, dp, private_text("https://youtube.com/watch?v=x")))
+    assert "nomini aniqlay olmadim" in s.texts()
